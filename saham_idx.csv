@@ -1,0 +1,696 @@
+ticker,sektor
+AADI.JK,Energi
+ADRO.JK,Energi
+ADMR.JK,Energi
+AKRA.JK,Energi
+APEX.JK,Energi
+ARTI.JK,Energi
+BIPI.JK,Energi
+BREN.JK,Energi
+BSSR.JK,Energi
+BUMI.JK,Energi
+BYAN.JK,Energi
+CBRE.JK,Energi
+CBUT.JK,Energi
+CNKO.JK,Energi
+COAL.JK,Energi
+CUAN.JK,Energi
+DAAZ.JK,Energi
+DEWA.JK,Energi
+DOID.JK,Energi
+DSSA.JK,Energi
+DWGL.JK,Energi
+ELSA.JK,Energi
+ENRG.JK,Energi
+ESSA.JK,Energi
+FIRE.JK,Energi
+FUTR.JK,Energi
+GEMS.JK,Energi
+GTBO.JK,Energi
+HADE.JK,Energi
+HRUM.JK,Energi
+IATA.JK,Energi
+INDY.JK,Energi
+ITMA.JK,Energi
+ITMG.JK,Energi
+JARR.JK,Energi
+JSKY.JK,Energi
+KEEN.JK,Energi
+KKGI.JK,Energi
+KOPI.JK,Energi
+MBAP.JK,Energi
+MCOL.JK,Energi
+MEDC.JK,Energi
+MINE.JK,Energi
+MYOH.JK,Energi
+OASA.JK,Energi
+OBMD.JK,Energi
+OILS.JK,Energi
+OKAS.JK,Energi
+PGAS.JK,Energi
+PGEO.JK,Energi
+PKPK.JK,Energi
+PSAB.JK,Energi
+PTBA.JK,Energi
+PTRO.JK,Energi
+RAJA.JK,Energi
+RATU.JK,Energi
+RGAS.JK,Energi
+RMKE.JK,Energi
+RUIS.JK,Energi
+SGER.JK,Energi
+SMMT.JK,Energi
+SMRU.JK,Energi
+SOLA.JK,Energi
+SURE.JK,Energi
+SUGI.JK,Energi
+TARA.JK,Energi
+TEBE.JK,Energi
+TCPI.JK,Energi
+TOBA.JK,Energi
+TPMA.JK,Energi
+TRAM.JK,Energi
+WOWS.JK,Energi
+ZINC.JK,Energi
+AKKU.JK,Barang Baku
+AKPI.JK,Barang Baku
+ALKA.JK,Barang Baku
+ALMI.JK,Barang Baku
+AMFG.JK,Barang Baku
+ANTM.JK,Barang Baku
+ARCI.JK,Barang Baku
+BAJA.JK,Barang Baku
+BBRM.JK,Barang Baku
+BRMS.JK,Barang Baku
+BRPT.JK,Barang Baku
+BTON.JK,Barang Baku
+CHEM.JK,Barang Baku
+CITA.JK,Barang Baku
+CLPI.JK,Barang Baku
+CTBN.JK,Barang Baku
+CTTH.JK,Barang Baku
+DKFT.JK,Barang Baku
+DPNS.JK,Barang Baku
+EKAD.JK,Barang Baku
+EMAS.JK,Barang Baku
+EPAC.JK,Barang Baku
+FASW.JK,Barang Baku
+FPNI.JK,Barang Baku
+FWCT.JK,Barang Baku
+GDST.JK,Barang Baku
+GGRP.JK,Barang Baku
+HKMU.JK,Barang Baku
+IFII.JK,Barang Baku
+IGAR.JK,Barang Baku
+INAI.JK,Barang Baku
+INCI.JK,Barang Baku
+INCO.JK,Barang Baku
+INKP.JK,Barang Baku
+INRU.JK,Barang Baku
+ISSP.JK,Barang Baku
+KIAS.JK,Barang Baku
+KMTR.JK,Barang Baku
+KRAS.JK,Barang Baku
+LION.JK,Barang Baku
+LMSH.JK,Barang Baku
+MARK.JK,Barang Baku
+MBMA.JK,Barang Baku
+MDKA.JK,Barang Baku
+MLIA.JK,Barang Baku
+NANO.JK,Barang Baku
+NCKL.JK,Barang Baku
+NICL.JK,Barang Baku
+NIKL.JK,Barang Baku
+PBID.JK,Barang Baku
+PICO.JK,Barang Baku
+PIPA.JK,Barang Baku
+POLY.JK,Barang Baku
+PURE.JK,Barang Baku
+SCCO.JK,Barang Baku
+SMGR.JK,Barang Baku
+SMBR.JK,Barang Baku
+SMCB.JK,Barang Baku
+SPMA.JK,Barang Baku
+SQMI.JK,Barang Baku
+SRSN.JK,Barang Baku
+SULI.JK,Barang Baku
+TBMS.JK,Barang Baku
+TINS.JK,Barang Baku
+TKIM.JK,Barang Baku
+TPIA.JK,Barang Baku
+TRST.JK,Barang Baku
+UNIC.JK,Barang Baku
+VOKS.JK,Barang Baku
+YPAS.JK,Barang Baku
+ABMM.JK,Perindustrian
+ACST.JK,Perindustrian
+ADHI.JK,Perindustrian
+ASII.JK,Perindustrian
+ASGR.JK,Perindustrian
+ASSA.JK,Perindustrian
+AUTO.JK,Perindustrian
+BAUT.JK,Perindustrian
+BIRD.JK,Perindustrian
+BOLT.JK,Perindustrian
+BRAM.JK,Perindustrian
+BUKK.JK,Perindustrian
+CARS.JK,Perindustrian
+CMNT.JK,Perindustrian
+CPIN.JK,Perindustrian
+DRMA.JK,Perindustrian
+GJTL.JK,Perindustrian
+HEXA.JK,Perindustrian
+HILL.JK,Perindustrian
+IDPR.JK,Perindustrian
+IMAS.JK,Perindustrian
+IMJS.JK,Perindustrian
+IMPC.JK,Perindustrian
+INDS.JK,Perindustrian
+INTP.JK,Perindustrian
+IPCC.JK,Perindustrian
+IPCM.JK,Perindustrian
+JKON.JK,Perindustrian
+JPFA.JK,Perindustrian
+KDSI.JK,Perindustrian
+KOBX.JK,Perindustrian
+KBLI.JK,Perindustrian
+KBLM.JK,Perindustrian
+MAIN.JK,Perindustrian
+MPMX.JK,Perindustrian
+MSJA.JK,Perindustrian
+NRCA.JK,Perindustrian
+PBSA.JK,Perindustrian
+PPGL.JK,Perindustrian
+PPRE.JK,Perindustrian
+PTPP.JK,Perindustrian
+SCNP.JK,Perindustrian
+SIPD.JK,Perindustrian
+SKRN.JK,Perindustrian
+SMSM.JK,Perindustrian
+SOCI.JK,Perindustrian
+SOSS.JK,Perindustrian
+TOPS.JK,Perindustrian
+TOTL.JK,Perindustrian
+TOTO.JK,Perindustrian
+TRJA.JK,Perindustrian
+UVCR.JK,Perindustrian
+WEGE.JK,Perindustrian
+WIKA.JK,Perindustrian
+WMPP.JK,Perindustrian
+WSBP.JK,Perindustrian
+WSKT.JK,Perindustrian
+WTON.JK,Perindustrian
+AALI.JK,Barang Konsumen Primer
+AGAR.JK,Barang Konsumen Primer
+AISA.JK,Barang Konsumen Primer
+ALTO.JK,Barang Konsumen Primer
+ANDI.JK,Barang Konsumen Primer
+ANJT.JK,Barang Konsumen Primer
+AYLS.JK,Barang Konsumen Primer
+BISI.JK,Barang Konsumen Primer
+BOBA.JK,Barang Konsumen Primer
+BUDI.JK,Barang Konsumen Primer
+BWPT.JK,Barang Konsumen Primer
+CEKA.JK,Barang Konsumen Primer
+CLEO.JK,Barang Konsumen Primer
+CMRY.JK,Barang Konsumen Primer
+COCO.JK,Barang Konsumen Primer
+CRAB.JK,Barang Konsumen Primer
+CSAP.JK,Barang Konsumen Primer
+CSRA.JK,Barang Konsumen Primer
+DEWI.JK,Barang Konsumen Primer
+DGWG.JK,Barang Konsumen Primer
+DLTA.JK,Barang Konsumen Primer
+DSNG.JK,Barang Konsumen Primer
+EPMT.JK,Barang Konsumen Primer
+FAPA.JK,Barang Konsumen Primer
+FISH.JK,Barang Konsumen Primer
+GGRM.JK,Barang Konsumen Primer
+GOLL.JK,Barang Konsumen Primer
+GOOD.JK,Barang Konsumen Primer
+GULA.JK,Barang Konsumen Primer
+GZCO.JK,Barang Konsumen Primer
+HOKI.JK,Barang Konsumen Primer
+HMSP.JK,Barang Konsumen Primer
+ICBP.JK,Barang Konsumen Primer
+INDF.JK,Barang Konsumen Primer
+ITIC.JK,Barang Konsumen Primer
+JAWA.JK,Barang Konsumen Primer
+KEJU.JK,Barang Konsumen Primer
+KLBF.JK,Barang Konsumen Primer
+LSIP.JK,Barang Konsumen Primer
+MAGP.JK,Barang Konsumen Primer
+MBTO.JK,Barang Konsumen Primer
+MGRO.JK,Barang Konsumen Primer
+MOLI.JK,Barang Konsumen Primer
+MRAT.JK,Barang Konsumen Primer
+MYOR.JK,Barang Konsumen Primer
+NAYZ.JK,Barang Konsumen Primer
+NPGF.JK,Barang Konsumen Primer
+NSSS.JK,Barang Konsumen Primer
+PALM.JK,Barang Konsumen Primer
+PGUN.JK,Barang Konsumen Primer
+PMMP.JK,Barang Konsumen Primer
+PNGO.JK,Barang Konsumen Primer
+PSDN.JK,Barang Konsumen Primer
+PSGO.JK,Barang Konsumen Primer
+PTPS.JK,Barang Konsumen Primer
+ROTI.JK,Barang Konsumen Primer
+SAMF.JK,Barang Konsumen Primer
+SGRO.JK,Barang Konsumen Primer
+SIMP.JK,Barang Konsumen Primer
+SKBM.JK,Barang Konsumen Primer
+SKLT.JK,Barang Konsumen Primer
+SMAR.JK,Barang Konsumen Primer
+SSMS.JK,Barang Konsumen Primer
+STAA.JK,Barang Konsumen Primer
+STTP.JK,Barang Konsumen Primer
+TAPG.JK,Barang Konsumen Primer
+TBLA.JK,Barang Konsumen Primer
+TLDN.JK,Barang Konsumen Primer
+TRGU.JK,Barang Konsumen Primer
+UCID.JK,Barang Konsumen Primer
+ULTJ.JK,Barang Konsumen Primer
+UNSP.JK,Barang Konsumen Primer
+UNVR.JK,Barang Konsumen Primer
+WIIM.JK,Barang Konsumen Primer
+WMUU.JK,Barang Konsumen Primer
+YUPI.JK,Barang Konsumen Primer
+ACES.JK,Barang Konsumen Non-Primer
+AMRT.JK,Barang Konsumen Non-Primer
+ARNA.JK,Barang Konsumen Non-Primer
+ASLC.JK,Barang Konsumen Non-Primer
+BATA.JK,Barang Konsumen Non-Primer
+BAYU.JK,Barang Konsumen Non-Primer
+BLTZ.JK,Barang Konsumen Non-Primer
+BOGA.JK,Barang Konsumen Non-Primer
+BOLA.JK,Barang Konsumen Non-Primer
+BUAH.JK,Barang Konsumen Non-Primer
+BUVA.JK,Barang Konsumen Non-Primer
+CAMP.JK,Barang Konsumen Non-Primer
+CINT.JK,Barang Konsumen Non-Primer
+CNMA.JK,Barang Konsumen Non-Primer
+CSMI.JK,Barang Konsumen Non-Primer
+DAYA.JK,Barang Konsumen Non-Primer
+DEPO.JK,Barang Konsumen Non-Primer
+DIGI.JK,Barang Konsumen Non-Primer
+DUCK.JK,Barang Konsumen Non-Primer
+DYAN.JK,Barang Konsumen Non-Primer
+ENAK.JK,Barang Konsumen Non-Primer
+ERAA.JK,Barang Konsumen Non-Primer
+ERAL.JK,Barang Konsumen Non-Primer
+FAST.JK,Barang Konsumen Non-Primer
+FILM.JK,Barang Konsumen Non-Primer
+FOLK.JK,Barang Konsumen Non-Primer
+FOOD.JK,Barang Konsumen Non-Primer
+FORE.JK,Barang Konsumen Non-Primer
+GDYR.JK,Barang Konsumen Non-Primer
+GEMA.JK,Barang Konsumen Non-Primer
+GMTD.JK,Barang Konsumen Non-Primer
+GOLF.JK,Barang Konsumen Non-Primer
+HAJJ.JK,Barang Konsumen Non-Primer
+HALO.JK,Barang Konsumen Non-Primer
+HERO.JK,Barang Konsumen Non-Primer
+HOME.JK,Barang Konsumen Non-Primer
+HOTL.JK,Barang Konsumen Non-Primer
+ICON.JK,Barang Konsumen Non-Primer
+IKAN.JK,Barang Konsumen Non-Primer
+JSPT.JK,Barang Konsumen Non-Primer
+KINO.JK,Barang Konsumen Non-Primer
+KPIG.JK,Barang Konsumen Non-Primer
+LPPF.JK,Barang Konsumen Non-Primer
+MAPA.JK,Barang Konsumen Non-Primer
+MAPB.JK,Barang Konsumen Non-Primer
+MAPI.JK,Barang Konsumen Non-Primer
+MIDI.JK,Barang Konsumen Non-Primer
+MLBI.JK,Barang Konsumen Non-Primer
+MNCN.JK,Barang Konsumen Non-Primer
+MPPA.JK,Barang Konsumen Non-Primer
+PANR.JK,Barang Konsumen Non-Primer
+PDES.JK,Barang Konsumen Non-Primer
+PJAA.JK,Barang Konsumen Non-Primer
+PLIN.JK,Barang Konsumen Non-Primer
+PTSP.JK,Barang Konsumen Non-Primer
+PZZA.JK,Barang Konsumen Non-Primer
+RAAM.JK,Barang Konsumen Non-Primer
+RAFI.JK,Barang Konsumen Non-Primer
+RALS.JK,Barang Konsumen Non-Primer
+RANC.JK,Barang Konsumen Non-Primer
+RICY.JK,Barang Konsumen Non-Primer
+SCMA.JK,Barang Konsumen Non-Primer
+SONA.JK,Barang Konsumen Non-Primer
+SPTO.JK,Barang Konsumen Non-Primer
+TALF.JK,Barang Konsumen Non-Primer
+TCID.JK,Barang Konsumen Non-Primer
+TGKA.JK,Barang Konsumen Non-Primer
+TIRA.JK,Barang Konsumen Non-Primer
+TOYS.JK,Barang Konsumen Non-Primer
+TSPC.JK,Barang Konsumen Non-Primer
+UNIQ.JK,Barang Konsumen Non-Primer
+VICI.JK,Barang Konsumen Non-Primer
+WINE.JK,Barang Konsumen Non-Primer
+ZONE.JK,Barang Konsumen Non-Primer
+BMHS.JK,Kesehatan
+CARE.JK,Kesehatan
+CHEK.JK,Kesehatan
+DGNS.JK,Kesehatan
+DKHH.JK,Kesehatan
+DVLA.JK,Kesehatan
+HEAL.JK,Kesehatan
+HYGN.JK,Kesehatan
+INAF.JK,Kesehatan
+IRRA.JK,Kesehatan
+KAEF.JK,Kesehatan
+LABS.JK,Kesehatan
+MDLA.JK,Kesehatan
+MEDS.JK,Kesehatan
+MERK.JK,Kesehatan
+MIKA.JK,Kesehatan
+MMIX.JK,Kesehatan
+MTMH.JK,Kesehatan
+OBAT.JK,Kesehatan
+OMED.JK,Kesehatan
+PEHA.JK,Kesehatan
+PRAY.JK,Kesehatan
+PRDA.JK,Kesehatan
+PRIM.JK,Kesehatan
+PYFA.JK,Kesehatan
+RSCH.JK,Kesehatan
+RSGK.JK,Kesehatan
+SAME.JK,Kesehatan
+SCPI.JK,Kesehatan
+SIDO.JK,Kesehatan
+SILO.JK,Kesehatan
+SOHO.JK,Kesehatan
+ADMF.JK,Keuangan
+AGRO.JK,Keuangan
+AGRS.JK,Keuangan
+AIMS.JK,Keuangan
+AMAG.JK,Keuangan
+AMAR.JK,Keuangan
+AMOR.JK,Keuangan
+APIC.JK,Keuangan
+ARTO.JK,Keuangan
+ASBI.JK,Keuangan
+ASDM.JK,Keuangan
+ASJT.JK,Keuangan
+ASMI.JK,Keuangan
+ASRM.JK,Keuangan
+BABP.JK,Keuangan
+BACA.JK,Keuangan
+BANK.JK,Keuangan
+BBCA.JK,Keuangan
+BBHI.JK,Keuangan
+BBKP.JK,Keuangan
+BBLD.JK,Keuangan
+BBMD.JK,Keuangan
+BBNI.JK,Keuangan
+BBRI.JK,Keuangan
+BBSI.JK,Keuangan
+BBTN.JK,Keuangan
+BBYB.JK,Keuangan
+BCAP.JK,Keuangan
+BCIC.JK,Keuangan
+BDMN.JK,Keuangan
+BEKS.JK,Keuangan
+BFIN.JK,Keuangan
+BGTG.JK,Keuangan
+BHAT.JK,Keuangan
+BHIT.JK,Keuangan
+BINA.JK,Keuangan
+BJBR.JK,Keuangan
+BJTM.JK,Keuangan
+BKSW.JK,Keuangan
+BMAS.JK,Keuangan
+BMRI.JK,Keuangan
+BMTR.JK,Keuangan
+BNBA.JK,Keuangan
+BNGA.JK,Keuangan
+BNII.JK,Keuangan
+BNLI.JK,Keuangan
+BPFI.JK,Keuangan
+BPII.JK,Keuangan
+BRIS.JK,Keuangan
+BSIM.JK,Keuangan
+BSWD.JK,Keuangan
+BTPN.JK,Keuangan
+BTPS.JK,Keuangan
+BVIC.JK,Keuangan
+CASA.JK,Keuangan
+CASH.JK,Keuangan
+CFIN.JK,Keuangan
+DNAR.JK,Keuangan
+FUJI.JK,Keuangan
+GSMF.JK,Keuangan
+HDFA.JK,Keuangan
+IBFN.JK,Keuangan
+INPC.JK,Keuangan
+JMAS.JK,Keuangan
+KREN.JK,Keuangan
+LIFE.JK,Keuangan
+LPGI.JK,Keuangan
+LPLI.JK,Keuangan
+LPPS.JK,Keuangan
+MASB.JK,Keuangan
+MAYA.JK,Keuangan
+MCOR.JK,Keuangan
+MEGA.JK,Keuangan
+MFMI.JK,Keuangan
+MGNA.JK,Keuangan
+MICE.JK,Keuangan
+MKAP.JK,Keuangan
+MKNT.JK,Keuangan
+MREI.JK,Keuangan
+MTWI.JK,Keuangan
+NISP.JK,Keuangan
+NOBU.JK,Keuangan
+OCAP.JK,Keuangan
+PADI.JK,Keuangan
+PANS.JK,Keuangan
+PEGE.JK,Keuangan
+PEVE.JK,Keuangan
+PLAS.JK,Keuangan
+PNBN.JK,Keuangan
+PNBS.JK,Keuangan
+PNIN.JK,Keuangan
+PNLF.JK,Keuangan
+POLA.JK,Keuangan
+POOL.JK,Keuangan
+RELI.JK,Keuangan
+SDRA.JK,Keuangan
+SFAN.JK,Keuangan
+SMMA.JK,Keuangan
+SRTG.JK,Keuangan
+SUPA.JK,Keuangan
+TIFA.JK,Keuangan
+TRUS.JK,Keuangan
+TUGU.JK,Keuangan
+TRIM.JK,Keuangan
+VINS.JK,Keuangan
+VICO.JK,Keuangan
+VRNA.JK,Keuangan
+WOMF.JK,Keuangan
+YOII.JK,Keuangan
+YULE.JK,Keuangan
+ADCP.JK,Properti
+APLN.JK,Properti
+ARMY.JK,Properti
+ASLI.JK,Properti
+ASRI.JK,Properti
+ATAP.JK,Properti
+BAPA.JK,Properti
+BAPI.JK,Properti
+BCIP.JK,Properti
+BEST.JK,Properti
+BIKA.JK,Properti
+BIPP.JK,Properti
+BKDP.JK,Properti
+BKSL.JK,Properti
+BSDE.JK,Properti
+BSBK.JK,Properti
+CBDK.JK,Properti
+CBPE.JK,Properti
+CITY.JK,Properti
+CLAY.JK,Properti
+COWL.JK,Properti
+CPRI.JK,Properti
+CTRA.JK,Properti
+DADA.JK,Properti
+DART.JK,Properti
+DFAM.JK,Properti
+DILD.JK,Properti
+DMAS.JK,Properti
+DUTI.JK,Properti
+EAST.JK,Properti
+ELTY.JK,Properti
+EMDE.JK,Properti
+FITT.JK,Properti
+FMII.JK,Properti
+GAMA.JK,Properti
+GPRA.JK,Properti
+GPSO.JK,Properti
+GRIA.JK,Properti
+GRPH.JK,Properti
+GRPM.JK,Properti
+GWSA.JK,Properti
+HOMI.JK,Properti
+HOPE.JK,Properti
+HRME.JK,Properti
+IPAC.JK,Properti
+INPP.JK,Properti
+JIHD.JK,Properti
+JRPT.JK,Properti
+KDTN.JK,Properti
+KIJA.JK,Properti
+KOTA.JK,Properti
+LAND.JK,Properti
+LPCK.JK,Properti
+LPKR.JK,Properti
+MDLN.JK,Properti
+MKPI.JK,Properti
+MMLP.JK,Properti
+MPRO.JK,Properti
+MSIE.JK,Properti
+MTLA.JK,Properti
+MTSM.JK,Properti
+NIRO.JK,Properti
+NZIA.JK,Properti
+OMRE.JK,Properti
+PANI.JK,Properti
+PLAN.JK,Properti
+POLL.JK,Properti
+POLI.JK,Properti
+POSA.JK,Properti
+PPRO.JK,Properti
+PSKT.JK,Properti
+PUDP.JK,Properti
+PURI.JK,Properti
+PWON.JK,Properti
+RBMS.JK,Properti
+RDTX.JK,Properti
+ROCK.JK,Properti
+RODA.JK,Properti
+SATU.JK,Properti
+SHID.JK,Properti
+SMDM.JK,Properti
+SMRA.JK,Properti
+SNIA.JK,Properti
+SWID.JK,Properti
+TAMA.JK,Properti
+TRIN.JK,Properti
+TRUE.JK,Properti
+UANG.JK,Properti
+URBN.JK,Properti
+VAST.JK,Properti
+ATIC.JK,Teknologi
+AXIO.JK,Teknologi
+AWAN.JK,Teknologi
+BELI.JK,Teknologi
+BUKA.JK,Teknologi
+CHIP.JK,Teknologi
+CYBR.JK,Teknologi
+DATA.JK,Teknologi
+DCII.JK,Teknologi
+DIVA.JK,Teknologi
+DMMX.JK,Teknologi
+DOSS.JK,Teknologi
+EDGE.JK,Teknologi
+ELIT.JK,Teknologi
+EMTK.JK,Teknologi
+ENVY.JK,Teknologi
+GLOB.JK,Teknologi
+GOTO.JK,Teknologi
+INET.JK,Teknologi
+IOTF.JK,Teknologi
+JATI.JK,Teknologi
+JAST.JK,Teknologi
+KIOS.JK,Teknologi
+LUCK.JK,Teknologi
+MCAS.JK,Teknologi
+MLPT.JK,Teknologi
+MSTI.JK,Teknologi
+MTDL.JK,Teknologi
+NFCX.JK,Teknologi
+NINE.JK,Teknologi
+PTSN.JK,Teknologi
+RUNS.JK,Teknologi
+TECH.JK,Teknologi
+TRON.JK,Teknologi
+TOSK.JK,Teknologi
+VKTR.JK,Teknologi
+WIFI.JK,Teknologi
+WIRG.JK,Teknologi
+YELO.JK,Teknologi
+ZYRX.JK,Teknologi
+BALI.JK,Infrastruktur
+CGAS.JK,Infrastruktur
+CMNP.JK,Infrastruktur
+EXCL.JK,Infrastruktur
+CENT.JK,Infrastruktur
+GHON.JK,Infrastruktur
+GOLD.JK,Infrastruktur
+IBST.JK,Infrastruktur
+ISAT.JK,Infrastruktur
+JSMR.JK,Infrastruktur
+KETR.JK,Infrastruktur
+KJEN.JK,Infrastruktur
+LINK.JK,Infrastruktur
+META.JK,Infrastruktur
+MTEL.JK,Infrastruktur
+POWR.JK,Infrastruktur
+SUPR.JK,Infrastruktur
+TBIG.JK,Infrastruktur
+TELE.JK,Infrastruktur
+TLKM.JK,Infrastruktur
+TOWR.JK,Infrastruktur
+ALII.JK,Transportasi & Logistik
+ATLA.JK,Transportasi & Logistik
+BESS.JK,Transportasi & Logistik
+BLTA.JK,Transportasi & Logistik
+BLOG.JK,Transportasi & Logistik
+BOAT.JK,Transportasi & Logistik
+BPTR.JK,Transportasi & Logistik
+BSML.JK,Transportasi & Logistik
+BULL.JK,Transportasi & Logistik
+CASS.JK,Transportasi & Logistik
+CMPP.JK,Transportasi & Logistik
+DEAL.JK,Transportasi & Logistik
+ELPI.JK,Transportasi & Logistik
+GIAA.JK,Transportasi & Logistik
+GMFI.JK,Transportasi & Logistik
+GTSI.JK,Transportasi & Logistik
+HAIS.JK,Transportasi & Logistik
+HATM.JK,Transportasi & Logistik
+HELI.JK,Transportasi & Logistik
+HITS.JK,Transportasi & Logistik
+HUMI.JK,Transportasi & Logistik
+JAYA.JK,Transportasi & Logistik
+KARW.JK,Transportasi & Logistik
+KLAS.JK,Transportasi & Logistik
+LAJU.JK,Transportasi & Logistik
+LEAD.JK,Transportasi & Logistik
+LOPI.JK,Transportasi & Logistik
+LRNA.JK,Transportasi & Logistik
+MBSS.JK,Transportasi & Logistik
+MPXL.JK,Transportasi & Logistik
+NELY.JK,Transportasi & Logistik
+PCAR.JK,Transportasi & Logistik
+PJHB.JK,Transportasi & Logistik
+PORT.JK,Transportasi & Logistik
+PPRI.JK,Transportasi & Logistik
+PSSI.JK,Transportasi & Logistik
+PTIS.JK,Transportasi & Logistik
+PSAT.JK,Transportasi & Logistik
+RIGS.JK,Transportasi & Logistik
+SAFE.JK,Transportasi & Logistik
+SAPX.JK,Transportasi & Logistik
+SDMU.JK,Transportasi & Logistik
+SHIP.JK,Transportasi & Logistik
+SMDR.JK,Transportasi & Logistik
+TAXI.JK,Transportasi & Logistik
+TAMU.JK,Transportasi & Logistik
+TMAS.JK,Transportasi & Logistik
+TRUK.JK,Transportasi & Logistik
+WBSA.JK,Transportasi & Logistik
+WEHA.JK,Transportasi & Logistik
+WINS.JK,Transportasi & Logistik
