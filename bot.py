@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # KONFIGURASI
 # ============================================================
-TELEGRAM_TOKEN = "GANTI_TOKEN_BARU_KAMU"
+TELEGRAM_TOKEN = "8862850675:AAFnZx9bLrISilkxgHlwPamemA73-aSzQgc"
 CHAT_ID        = "906923710"
 PORTFOLIO_FILE = "portfolio.json"
 
