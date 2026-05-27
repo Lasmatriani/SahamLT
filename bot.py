@@ -93,15 +93,19 @@ def load_saham_csv():
 # ============================================================
 # FUNGSI AMBIL DATA & INDIKATOR
 # ============================================================
-def ambil_data(ticker, periode="1y"):
-    try:
-        df = yf.Ticker(ticker).history(period=periode)
-        if df.empty or len(df) < 50:
-            return None
-        return df
-    except Exception as e:
-        logger.error(f"Error ambil {ticker}: {e}")
-        return None
+def ambil_data(ticker, periode="1y", retry=2):
+    for attempt in range(retry):
+        try:
+            df = yf.Ticker(ticker).history(period=periode)
+            if not df.empty and len(df) >= 50:
+                return df
+            if attempt < retry - 1:
+                time.sleep(2)
+        except Exception as e:
+            logger.error(f"Error ambil {ticker} (attempt {attempt+1}): {e}")
+            if attempt < retry - 1:
+                time.sleep(3)
+    return None
 
 def hitung_indikator(df):
     df = df.copy()
@@ -136,7 +140,7 @@ def scoring_sektor(sektor_dict):
         valid   = 0
 
         for t in proxy:
-            df = ambil_data(t, "3mo")
+            df = ambil_data(t, "6mo")
             if df is None or len(df) < 20:
                 continue
             df  = hitung_indikator(df)
@@ -148,7 +152,7 @@ def scoring_sektor(sektor_dict):
             if lat['Close'] > lat['MA50']:         total += 1   # di atas MA50
             if lat['Volume'] > lat['Vol_MA20']:    total += 1   # volume naik
             if lat['MACD']  > lat['Signal']:       total += 1   # MACD positif
-            time.sleep(0.3)
+            time.sleep(1.5)
 
         if valid:
             hasil[sektor] = round(total / valid, 2)
@@ -443,7 +447,7 @@ def scan_pagi():
                 sinyal.append(h)
         except Exception as e:
             logger.error(f"Error scan {t}: {e}")
-        time.sleep(0.5)
+        time.sleep(2)
 
     sinyal.sort(key=lambda x: x['skor'], reverse=True)
 
@@ -531,7 +535,9 @@ def cek_perintah():
 /portofolio — Lihat posisi + P&L
 /tambah BBCA 6995 — Tambah saham
 /hapus BBCA — Hapus saham
-/scan — Scan manual sekarang
+/scan — Scan semua sektor hot
+/scan BBCA — Scan saham tertentu
+/scan BBCA 6995 — Scan + cek CL & TP
 /sektor — Cek kondisi sektor
 /reload — Reload CSV saham terbaru
 /help — Bantuan
@@ -608,9 +614,66 @@ def cek_perintah():
                     else:
                         kirim_pesan(f"❌ {t} tidak ada di portofolio.")
 
-            elif text == '/scan':
-                kirim_pesan("🔍 Scan manual dimulai...")
-                scan_pagi()
+            elif text.startswith("/scan"):
+                parts = text.split()
+
+                if len(parts) == 1:
+                    kirim_pesan("🔍 Scan manual dimulai...")
+                    scan_pagi()
+
+                else:
+                    ticker = parts[1].upper()
+                    if not ticker.endswith(".JK"):
+                        ticker += ".JK"
+
+                    harga_beli = None
+                    if len(parts) == 3:
+                        try:
+                            harga_beli = float(parts[2])
+                        except:
+                            kirim_pesan("❌ Format salah.
+Contoh: /scan BBCA atau /scan BBCA 6995")
+                            return
+
+                    if harga_beli is None:
+                        portfolio = load_portfolio()
+                        if ticker in portfolio:
+                            harga_beli = portfolio[ticker]["harga_beli"]
+
+                    kirim_pesan(f"🔍 Scanning <b>{ticker}</b>... sabar sebentar 😊")
+
+                    hasil_beli = analisis_beli(ticker)
+                    if hasil_beli:
+                        if hasil_beli["skor"] >= 4:
+                            kirim_pesan(fmt_beli(hasil_beli))
+                        else:
+                            detail_str = chr(10).join(hasil_beli["detail"])
+                            skor_note = "⚠️ Skor belum cukup untuk sinyal beli kuat." if hasil_beli["skor"] < 4 else ""
+                            kirim_pesan(f"""📊 <b>Hasil Scan: {ticker}</b>
+━━━━━━━━━━━━━━━━━━
+💰 Harga  : Rp {hasil_beli["harga"]:,.0f}
+📊 Skor   : {hasil_beli["skor"]:.1f}/5
+📈 RSI    : {hasil_beli["rsi"]:.1f}
+
+<b>Detail:</b>
+{detail_str}
+
+{skor_note}""".strip())
+                    else:
+                        kirim_pesan(f"❌ Data <b>{ticker}</b> tidak ditemukan.
+Pastikan kode saham benar.")
+
+                    if harga_beli:
+                        tp = analisis_takeprofit(ticker, harga_beli)
+                        if tp and tp["skor_jual"] >= 1:
+                            kirim_pesan(fmt_takeprofit(tp))
+
+                        cl = analisis_cutloss(ticker, harga_beli)
+                        if cl and cl["pintu_terbuka"] >= 1:
+                            kirim_pesan(fmt_cutloss(cl))
+                        elif cl:
+                            kirim_pesan(f"✅ <b>{ticker}</b> aman.
+P&L: {cl["pnl_pct"]:+.1f}% | Tidak ada sinyal cut loss.")
 
             elif text == '/help':
                 kirim_pesan("""📖 <b>Panduan Bot v3.0</b>
