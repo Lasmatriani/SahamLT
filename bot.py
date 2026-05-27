@@ -5,6 +5,17 @@ Fix: periode "1y" untuk cut loss & take profit
 """
 
 import yfinance as yf
+
+# Fix Yahoo Finance blocking dari cloud server
+import requests
+yf_session = requests.Session()
+yf_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+})
 import pandas as pd
 import numpy as np
 import requests
@@ -21,7 +32,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # KONFIGURASI
 # ============================================================
-TELEGRAM_TOKEN = "8862850675:AAFnZx9bLrISilkxgHlwPamemA73-aSzQgc"
+TELEGRAM_TOKEN = "GANTI_TOKEN_BARU_KAMU"
 CHAT_ID        = "906923710"
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -96,7 +107,7 @@ def load_saham_csv():
 def ambil_data(ticker, periode="1y", retry=2):
     for attempt in range(retry):
         try:
-            df = yf.Ticker(ticker).history(period=periode)
+            df = yf.Ticker(ticker, session=yf_session).history(period=periode)
             if not df.empty and len(df) >= 50:
                 return df
             if attempt < retry - 1:
@@ -575,7 +586,7 @@ def cek_perintah():
                     pesan = "💼 <b>Portofolio:</b>\n━━━━━━━━━━━━━━━━━━\n"
                     for ticker, data in portfolio.items():
                         try:
-                            hn  = yf.Ticker(ticker).history(period="2d")['Close'].iloc[-1]
+                            hn  = yf.Ticker(ticker, session=yf_session).history(period="2d")['Close'].iloc[-1]
                             pnl = ((hn - data['harga_beli']) / data['harga_beli']) * 100
                             em  = "📈" if pnl >= 0 else "📉"
                             pesan += f"{em} <b>{ticker}</b>\n"
@@ -642,6 +653,7 @@ def cek_perintah():
                     kirim_pesan(f"🔍 Scanning <b>{ticker}</b>... sabar sebentar 😊")
 
                     hasil_beli = analisis_beli(ticker)
+                    logger.info(f"Hasil analisis {ticker}: {hasil_beli}")
                     if hasil_beli:
                         if hasil_beli["skor"] >= 4:
                             kirim_pesan(fmt_beli(hasil_beli))
