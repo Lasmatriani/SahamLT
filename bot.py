@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # KONFIGURASI
 # ============================================================
-TELEGRAM_TOKEN = "8862850675:AAFnZx9bLrISilkxgHlwPamemA73-aSzQgc"
+TELEGRAM_TOKEN = "GANTI_TOKEN_BARU_KAMU"
 CHAT_ID        = "906923710"
 PORTFOLIO_FILE = "portfolio.json"
 
@@ -631,8 +631,7 @@ def cek_perintah():
                         try:
                             harga_beli = float(parts[2])
                         except:
-                            kirim_pesan("❌ Format salah.
-Contoh: /scan BBCA atau /scan BBCA 6995")
+                            kirim_pesan("❌ Format salah.\nContoh: /scan BBCA atau /scan BBCA 6995")
                             return
 
                     if harga_beli is None:
@@ -660,9 +659,7 @@ Contoh: /scan BBCA atau /scan BBCA 6995")
 
 {skor_note}""".strip())
                     else:
-                        kirim_pesan(f"❌ Data <b>{ticker}</b> tidak ditemukan.
-Pastikan kode saham benar.")
-
+                        kirim_pesan(f"❌ Data <b>{ticker}</b> tidak ditemukan.\nPastikan kode saham benar.")
                     if harga_beli:
                         tp = analisis_takeprofit(ticker, harga_beli)
                         if tp and tp["skor_jual"] >= 1:
@@ -672,8 +669,7 @@ Pastikan kode saham benar.")
                         if cl and cl["pintu_terbuka"] >= 1:
                             kirim_pesan(fmt_cutloss(cl))
                         elif cl:
-                            kirim_pesan(f"✅ <b>{ticker}</b> aman.
-P&L: {cl["pnl_pct"]:+.1f}% | Tidak ada sinyal cut loss.")
+                            kirim_pesan(f"✅ <b>{ticker}</b> aman. P&L: {cl[chr(34)+"pnl_pct"+chr(34)]:+.1f}% | Tidak ada sinyal cut loss.")
 
             elif text == '/help':
                 kirim_pesan("""📖 <b>Panduan Bot v3.0</b>
