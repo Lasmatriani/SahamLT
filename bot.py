@@ -669,7 +669,8 @@ def cek_perintah():
                         if cl and cl["pintu_terbuka"] >= 1:
                             kirim_pesan(fmt_cutloss(cl))
                         elif cl:
-                            kirim_pesan(f"✅ <b>{ticker}</b> aman. P&L: {cl[chr(34)+"pnl_pct"+chr(34)]:+.1f}% | Tidak ada sinyal cut loss.")
+                            pnl_val = cl["pnl_pct"]
+                            kirim_pesan(f"✅ <b>{ticker}</b> aman. P&L: {pnl_val:+.1f}% | Tidak ada sinyal cut loss.")
 
             elif text == '/help':
                 kirim_pesan("""📖 <b>Panduan Bot v3.0</b>
