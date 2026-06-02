@@ -174,12 +174,12 @@ def _fetch_from_itick(kode: str) -> dict | None:
     now       = int(time.time())
     from_ts   = now - (180 * 24 * 3600)
 
-r2 = requests.get(
-    f"{base}/stock/kline",
-    params={"region": "ID", "code": kode, "kType": "8",
-            "limit": "180", "et": str(now * 1000)},
-    headers=headers, timeout=15
-)
+    r2 = requests.get(
+        f"{base}/stock/kline",
+        params={"region": "ID", "code": kode, "kType": "8",
+                "limit": "180", "et": str(now * 1000)},
+        headers=headers, timeout=15
+    )
     r2.raise_for_status()
     kline = r2.json()
     logger.info(f"iTick kline {kode}: code={kline.get('code')} count={len(kline.get('data',[]))}")
