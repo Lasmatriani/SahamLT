@@ -161,8 +161,8 @@ def _fetch_from_itick(kode: str) -> dict | None:
         return None
 
     qd      = q["data"]
-    current = float(qd.get("c", 0) or qd.get("lp", 0) or 0)
-    prev    = float(qd.get("pc", 0) or qd.get("yc", 0) or current)
+    current = float(qd.get("ld", 0) or qd.get("c", 0) or 0)
+    prev    = float(qd.get("p", 0) or qd.get("pc", 0) or current)
     name    = qd.get("n", kode)
 
     if current == 0:
