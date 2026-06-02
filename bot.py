@@ -225,47 +225,37 @@ def _fetch_from_finnhub(kode: str) -> dict | None:
 
 
 def _fetch_from_stooq(kode: str) -> dict | None:
-    """
-    Fetch dari Stooq — reliable dari server cloud, tidak butuh API key.
-    Format ticker IDX di Stooq: HATM.ID
-    """
+    """Fetch dari Stooq — fallback, format ticker IDX: HATM.ID"""
     import requests, io
 
     ticker = kode.upper() + ".ID"
-    url = (
-        f"https://stooq.com/q/d/l/"
-        f"?s={ticker}&i=d"
-    )
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    }
+    url    = f"https://stooq.com/q/d/l/?s={ticker}&i=d"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
     r = requests.get(url, headers=headers, timeout=15)
     r.raise_for_status()
 
-    # Stooq return CSV
     text = r.text.strip()
     if not text or "No data" in text or len(text) < 50:
-        logger.warning(f"Stooq: no data for {ticker}")
         return None
 
-    hist_df = pd.read_csv(
-        io.StringIO(text),
-        parse_dates=["Date"],
-        index_col="Date"
-    )
-    hist_df.columns = [c.strip().capitalize() for c in hist_df.columns]
+    # Baca CSV tanpa parse_dates dulu
+    hist_df = pd.read_csv(io.StringIO(text))
+    logger.info(f"Stooq columns: {list(hist_df.columns)}")
 
-    # Rename kolom jika perlu
-    col_map = {"Open":"Open","High":"High","Low":"Low","Close":"Close","Volume":"Volume"}
-    hist_df = hist_df.rename(columns={c: col_map.get(c, c) for c in hist_df.columns})
+    # Normalize nama kolom — Stooq kadang pakai 'Date', kadang lowercase
+    hist_df.columns = [c.strip().title() for c in hist_df.columns]
 
-    if "Close" not in hist_df.columns or len(hist_df) < 20:
-        logger.warning(f"Stooq: insufficient data for {ticker} ({len(hist_df)} rows)")
+    if "Date" not in hist_df.columns:
+        logger.warning(f"Stooq: no Date column, got {list(hist_df.columns)}")
         return None
 
-    hist_df = hist_df.sort_index()
+    hist_df["Date"] = pd.to_datetime(hist_df["Date"], errors="coerce")
+    hist_df = hist_df.set_index("Date").sort_index()
     hist_df = hist_df[["Open","High","Low","Close","Volume"]].dropna()
+
+    if len(hist_df) < 20:
+        return None
 
     current = float(hist_df["Close"].iloc[-1])
     prev    = float(hist_df["Close"].iloc[-2])
