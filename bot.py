@@ -102,204 +102,257 @@ def ticker_id(kode: str) -> str:
     return kode if kode.endswith(".JK") else kode + ".JK"
 
 def get_price_data(kode: str) -> dict | None:
-    """Ambil harga + indikator teknikal dari Yahoo Finance."""
+    """
+    Ambil data saham dari multiple sumber:
+    1. IDX API (tidak resmi tapi reliable dari server cloud)
+    2. yfinance sebagai fallback
+    """
+    import requests
+
+    kode = kode.upper().strip()
+
+    # ── Sumber 1: IDX API tidak resmi ────────────────────────────────────
+    try:
+        d = _fetch_from_idx(kode)
+        if d:
+            return d
+    except Exception as e:
+        logger.warning(f"IDX API gagal untuk {kode}: {e}")
+
+    # ── Sumber 2: yfinance sebagai fallback ──────────────────────────────
+    try:
+        d = _fetch_from_yfinance(kode)
+        if d:
+            return d
+    except Exception as e:
+        logger.warning(f"yfinance gagal untuk {kode}: {e}")
+
+    logger.error(f"Semua sumber data gagal untuk {kode}")
+    return None
+
+
+def _fetch_from_idx(kode: str) -> dict | None:
+    """Fetch dari IDX API tidak resmi — reliable dari server cloud."""
+    import requests
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Referer": "https://www.idx.co.id/",
+    }
+
+    # Fetch harga terkini dari IDX
+    url_summary = (
+        f"https://www.idx.co.id/primary/TradingSummary/GetStockSummary"
+        f"?start=0&length=1&code={kode}&lang=id"
+    )
+    r = requests.get(url_summary, headers=headers, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+
+    if not data.get("data"):
+        return None
+
+    stock = data["data"][0]
+    current  = float(stock.get("IndexLastPrice", 0) or stock.get("LastPrice", 0) or 0)
+    prev     = float(stock.get("PreviousPrice", current) or current)
+    if current == 0:
+        return None
+
+    chg_pct = ((current - prev) / prev * 100) if prev > 0 else 0.0
+
+    # Fetch data historis dari IDX untuk hitung indikator
+    url_hist = (
+        f"https://www.idx.co.id/primary/StockData/GetChartStockbyCode"
+        f"?indexCode={kode}&tradingDate=&period=180&language=id"
+    )
+    r2 = requests.get(url_hist, headers=headers, timeout=10)
+    r2.raise_for_status()
+    hist_data = r2.json()
+
+    if not hist_data.get("ChartData"):
+        return None
+
+    chart = hist_data["ChartData"]
+    closes  = pd.Series([float(c.get("close", 0) or 0) for c in chart], dtype=float)
+    opens   = pd.Series([float(c.get("open",  0) or 0) for c in chart], dtype=float)
+    highs   = pd.Series([float(c.get("high",  0) or 0) for c in chart], dtype=float)
+    lows    = pd.Series([float(c.get("low",   0) or 0) for c in chart], dtype=float)
+    volumes = pd.Series([float(c.get("volume",0) or 0) for c in chart], dtype=float)
+    dates   = pd.to_datetime([c.get("date","") for c in chart], errors="coerce")
+
+    # Buat DataFrame seperti format yfinance
+    hist_df = pd.DataFrame({
+        "Open": opens, "High": highs, "Low": lows,
+        "Close": closes, "Volume": volumes
+    }, index=dates).dropna()
+
+    if len(hist_df) < 20:
+        return None
+
+    name = stock.get("StockName", kode)
+    pbv  = None
+    per  = None
+
+    return _calculate_indicators(kode, name, current, prev, chg_pct, hist_df, pbv, per)
+
+
+def _fetch_from_yfinance(kode: str) -> dict | None:
+    """Fetch dari yfinance dengan session khusus."""
     import requests
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
 
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+    })
+    retry = Retry(total=2, backoff_factor=2, status_forcelist=[429, 500, 502, 503])
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+
+    tk   = yf.Ticker(ticker_id(kode), session=session)
+    hist = tk.history(period="6mo", interval="1d")
+    if hist.empty:
+        hist = tk.history(period="3mo", interval="1d")
+    if hist.empty:
+        return None
+
+    current = float(hist["Close"].iloc[-1])
+    prev    = float(hist["Close"].iloc[-2])
+    chg_pct = ((current - prev) / prev) * 100
+
     try:
-        # ── Setup session dengan headers supaya tidak diblokir Yahoo ──────
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        })
-        # Retry otomatis 3x kalau gagal
-        retry = Retry(total=3, backoff_factor=1,
-                      status_forcelist=[429, 500, 502, 503, 504])
-        session.mount("https://", HTTPAdapter(max_retries=retry))
-
-        tk = yf.Ticker(ticker_id(kode), session=session)
-
-        # Historis 6 bulan untuk hitung indikator
-        hist = tk.history(period="6mo", interval="1d")
-        if hist.empty:
-            # Coba periode lebih pendek kalau 6mo gagal
-            hist = tk.history(period="3mo", interval="1d")
-        if hist.empty:
-            logger.warning(f"No data for {kode}")
-            return None
-
-        close = hist["Close"]
-        volume = hist["Volume"]
-
-        # ── Harga terkini
-        current  = float(close.iloc[-1])
-        prev     = float(close.iloc[-2])
-        chg_pct  = ((current - prev) / prev) * 100
-
-        # ── RSI (14)
-        delta = close.diff()
-        gain  = delta.clip(lower=0).rolling(14).mean()
-        loss  = (-delta.clip(upper=0)).rolling(14).mean()
-        rs    = gain / loss
-        rsi   = float(100 - (100 / (1 + rs.iloc[-1])))
-
-        # ── MACD (12,26,9)
-        ema12  = close.ewm(span=12).mean()
-        ema26  = close.ewm(span=26).mean()
-        macd_line        = ema12 - ema26
-        signal_line      = macd_line.ewm(span=9).mean()
-        macd_hist        = float(macd_line.iloc[-1] - signal_line.iloc[-1])
-        macd_hist_prev   = float(macd_line.iloc[-2] - signal_line.iloc[-2])
-        macd_val         = float(macd_line.iloc[-1])
-        signal_val       = float(signal_line.iloc[-1])
-        # Golden cross = histogram baru saja balik positif dari negatif
-        macd_golden_cross = macd_hist > 0 and macd_hist_prev <= 0
-
-        # ── MA 20 & 50
-        ma20 = float(close.rolling(20).mean().iloc[-1])
-        ma50 = float(close.rolling(50).mean().iloc[-1])
-
-        # ── Support & Resistance (20-hari low/high)
-        support    = float(close.rolling(20).min().iloc[-1])
-        resistance = float(close.rolling(20).max().iloc[-1])
-
-        # ── Volume spike (vol hari ini vs rata2 10 hari)
-        avg_vol    = float(volume.rolling(10).mean().iloc[-1])
-        today_vol  = float(volume.iloc[-1])
-        vol_ratio  = today_vol / avg_vol if avg_vol > 0 else 1.0
-
-        # ── Bollinger Bands (20, 2)
-        bb_mid   = close.rolling(20).mean()
-        bb_std   = close.rolling(20).std()
-        bb_upper = float((bb_mid + 2 * bb_std).iloc[-1])
-        bb_lower = float((bb_mid - 2 * bb_std).iloc[-1])
-        bb_mid_v = float(bb_mid.iloc[-1])
-        bb_width = (bb_upper - bb_lower) / bb_mid_v   # bandwidth relatif
-        # Posisi harga dalam BB (0=lower, 1=upper)
-        bb_pct   = (current - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
-        # Squeeze: bandwidth < 10% dari harga = volatilitas rendah, potensi breakout
-        bb_squeeze = bb_width < 0.10
-
-        # ── Candlestick Pattern Detection (5 hari terakhir)
-        op   = hist["Open"]
-        hi   = hist["High"]
-        lo   = hist["Low"]
-        cl2  = hist["Close"]
-
-        def body(i):   return abs(float(cl2.iloc[i]) - float(op.iloc[i]))
-        def candle(i): return float(hi.iloc[i]) - float(lo.iloc[i])
-        def is_bull(i):return float(cl2.iloc[i]) > float(op.iloc[i])
-        def is_bear(i):return float(cl2.iloc[i]) < float(op.iloc[i])
-
-        patterns = []
-
-        # --- Doji (body sangat kecil < 10% dari total candle)
-        if candle(-1) > 0 and body(-1) / candle(-1) < 0.10:
-            patterns.append(("DOJI", "neutral", "Ketidakpastian — tunggu konfirmasi arah ⚖️"))
-
-        # --- Hammer / Inverted Hammer (bullish reversal)
-        if candle(-1) > 0:
-            lower_shadow = float(op.iloc[-1] if is_bull(-1) else cl2.iloc[-1]) - float(lo.iloc[-1])
-            upper_shadow = float(hi.iloc[-1]) - float(cl2.iloc[-1] if is_bull(-1) else op.iloc[-1])
-            _body        = body(-1)
-            # Hammer: lower shadow panjang (>2x body), upper shadow kecil
-            if lower_shadow > 2 * _body and upper_shadow < _body and _body > 0:
-                patterns.append(("HAMMER", "bullish", "Hammer — sinyal reversal bullish 🔨"))
-            # Shooting Star: upper shadow panjang, lower shadow kecil (bearish)
-            if upper_shadow > 2 * _body and lower_shadow < _body and _body > 0:
-                patterns.append(("SHOOTING STAR", "bearish", "Shooting Star — potensi reversal turun ⭐"))
-
-        # --- Bullish Engulfing (hari ini bull, kemarin bear, body hari ini > kemarin)
-        if len(cl2) >= 2:
-            if is_bear(-2) and is_bull(-1) and body(-1) > body(-2):
-                if float(cl2.iloc[-1]) > float(op.iloc[-2]) and float(op.iloc[-1]) < float(cl2.iloc[-2]):
-                    patterns.append(("BULLISH ENGULFING", "bullish", "Bullish Engulfing — sinyal beli kuat 🟢"))
-
-        # --- Bearish Engulfing
-        if len(cl2) >= 2:
-            if is_bull(-2) and is_bear(-1) and body(-1) > body(-2):
-                if float(cl2.iloc[-1]) < float(op.iloc[-2]) and float(op.iloc[-1]) > float(cl2.iloc[-2]):
-                    patterns.append(("BEARISH ENGULFING", "bearish", "Bearish Engulfing — sinyal jual kuat 🔴"))
-
-        # --- Morning Star (3 candle: bear besar, doji/kecil, bull besar)
-        if len(cl2) >= 3:
-            big_bear  = is_bear(-3) and body(-3) > candle(-3) * 0.6
-            small_mid = body(-2) < candle(-2) * 0.3
-            big_bull  = is_bull(-1) and body(-1) > candle(-1) * 0.6
-            if big_bear and small_mid and big_bull:
-                patterns.append(("MORNING STAR", "bullish", "Morning Star — reversal bullish kuat ⭐🌅"))
-
-        # --- Evening Star (kebalikan Morning Star, bearish)
-        if len(cl2) >= 3:
-            big_bull2  = is_bull(-3) and body(-3) > candle(-3) * 0.6
-            small_mid2 = body(-2) < candle(-2) * 0.3
-            big_bear2  = is_bear(-1) and body(-1) > candle(-1) * 0.6
-            if big_bull2 and small_mid2 and big_bear2:
-                patterns.append(("EVENING STAR", "bearish", "Evening Star — reversal bearish 🌆"))
-
-        # --- Three White Soldiers (3 candle bull berturut naik)
-        if len(cl2) >= 3:
-            if all(is_bull(-i) for i in [1,2,3]):
-                if float(cl2.iloc[-1]) > float(cl2.iloc[-2]) > float(cl2.iloc[-3]):
-                    patterns.append(("THREE WHITE SOLDIERS", "bullish", "3 White Soldiers — tren naik kuat 💪"))
-
-        # --- Three Black Crows (3 candle bear berturut turun)
-        if len(cl2) >= 3:
-            if all(is_bear(-i) for i in [1,2,3]):
-                if float(cl2.iloc[-1]) < float(cl2.iloc[-2]) < float(cl2.iloc[-3]):
-                    patterns.append(("THREE BLACK CROWS", "bearish", "3 Black Crows — tren turun kuat 🐦‍⬛"))
-
-        # Ringkasan sinyal candlestick
-        candle_bull = sum(1 for p in patterns if p[1] == "bullish")
-        candle_bear = sum(1 for p in patterns if p[1] == "bearish")
-        candle_bias = "bullish" if candle_bull > candle_bear else ("bearish" if candle_bear > candle_bull else "neutral")
-
-        # ── Fundamental
         info = tk.info
         pbv  = info.get("priceToBook")
         per  = info.get("trailingPE")
         name = info.get("longName") or info.get("shortName") or kode
+    except Exception:
+        pbv = per = None
+        name = kode
 
-        return {
-            "kode":             kode.upper(),
-            "name":             name,
-            "current":          current,
-            "prev":             prev,
-            "chg_pct":          chg_pct,
-            "rsi":              rsi,
-            "macd":             macd_val,
-            "signal":           signal_val,
-            "macd_hist":        macd_hist,
-            "macd_hist_prev":   macd_hist_prev,
-            "macd_golden_cross":macd_golden_cross,
-            "ma20":             ma20,
-            "ma50":             ma50,
-            "support":          support,
-            "resistance":       resistance,
-            "vol_ratio":        vol_ratio,
-            "bb_upper":         bb_upper,
-            "bb_lower":         bb_lower,
-            "bb_mid":           bb_mid_v,
-            "bb_pct":           bb_pct,
-            "bb_width":         bb_width,
-            "bb_squeeze":       bb_squeeze,
-            "patterns":         patterns,
-            "candle_bias":      candle_bias,
-            "pbv":              pbv,
-            "per":              per,
-            # Raw OHLCV untuk chart — 60 hari terakhir
-            "hist":             hist.tail(60),
-        }
-    except Exception as e:
-        logger.error(f"Error fetching {kode}: {e}")
-        return None
+    return _calculate_indicators(kode, name, current, prev, chg_pct, hist, pbv, per)
+
+
+def _calculate_indicators(kode, name, current, prev, chg_pct, hist, pbv, per) -> dict:
+    """Hitung semua indikator teknikal dari DataFrame OHLCV."""
+    close  = hist["Close"]
+    volume = hist["Volume"]
+    op     = hist["Open"]
+    hi     = hist["High"]
+    lo     = hist["Low"]
+
+    # RSI
+    delta = close.diff()
+    gain  = delta.clip(lower=0).rolling(14).mean()
+    loss  = (-delta.clip(upper=0)).rolling(14).mean()
+    rs    = gain / loss
+    rsi   = float(100 - (100 / (1 + rs.iloc[-1])))
+
+    # MACD
+    ema12         = close.ewm(span=12).mean()
+    ema26         = close.ewm(span=26).mean()
+    macd_line     = ema12 - ema26
+    signal_line   = macd_line.ewm(span=9).mean()
+    macd_hist     = float(macd_line.iloc[-1] - signal_line.iloc[-1])
+    macd_hist_prev= float(macd_line.iloc[-2] - signal_line.iloc[-2])
+    macd_val      = float(macd_line.iloc[-1])
+    signal_val    = float(signal_line.iloc[-1])
+    macd_golden_cross = macd_hist > 0 and macd_hist_prev <= 0
+
+    # MA
+    ma20 = float(close.rolling(20).mean().iloc[-1])
+    ma50 = float(close.rolling(min(50, len(close))).mean().iloc[-1])
+
+    # Support / Resistance
+    support    = float(close.rolling(20).min().iloc[-1])
+    resistance = float(close.rolling(20).max().iloc[-1])
+
+    # Volume
+    avg_vol   = float(volume.rolling(10).mean().iloc[-1])
+    vol_ratio = float(volume.iloc[-1]) / avg_vol if avg_vol > 0 else 1.0
+
+    # Bollinger Bands
+    bb_mid_s = close.rolling(20).mean()
+    bb_std   = close.rolling(20).std()
+    bb_upper = float((bb_mid_s + 2 * bb_std).iloc[-1])
+    bb_lower = float((bb_mid_s - 2 * bb_std).iloc[-1])
+    bb_mid_v = float(bb_mid_s.iloc[-1])
+    bb_width = (bb_upper - bb_lower) / bb_mid_v if bb_mid_v > 0 else 0
+    bb_pct   = (current - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
+    bb_squeeze = bb_width < 0.10
+
+    # Candlestick
+    cl2 = close
+    def body(i):    return abs(float(cl2.iloc[i]) - float(op.iloc[i]))
+    def candle(i):  return float(hi.iloc[i]) - float(lo.iloc[i])
+    def is_bull(i): return float(cl2.iloc[i]) > float(op.iloc[i])
+    def is_bear(i): return float(cl2.iloc[i]) < float(op.iloc[i])
+
+    patterns = []
+    if candle(-1) > 0 and body(-1) / candle(-1) < 0.10:
+        patterns.append(("DOJI", "neutral", "Ketidakpastian — tunggu konfirmasi arah ⚖️"))
+    if candle(-1) > 0:
+        ls = float(op.iloc[-1] if is_bull(-1) else cl2.iloc[-1]) - float(lo.iloc[-1])
+        us = float(hi.iloc[-1]) - float(cl2.iloc[-1] if is_bull(-1) else op.iloc[-1])
+        b  = body(-1)
+        if ls > 2*b and us < b and b > 0:
+            patterns.append(("HAMMER", "bullish", "Hammer — sinyal reversal bullish 🔨"))
+        if us > 2*b and ls < b and b > 0:
+            patterns.append(("SHOOTING STAR", "bearish", "Shooting Star — potensi reversal turun ⭐"))
+    if len(cl2) >= 2:
+        if is_bear(-2) and is_bull(-1) and body(-1) > body(-2):
+            if float(cl2.iloc[-1]) > float(op.iloc[-2]) and float(op.iloc[-1]) < float(cl2.iloc[-2]):
+                patterns.append(("BULLISH ENGULFING", "bullish", "Bullish Engulfing — sinyal beli kuat 🟢"))
+        if is_bull(-2) and is_bear(-1) and body(-1) > body(-2):
+            if float(cl2.iloc[-1]) < float(op.iloc[-2]) and float(op.iloc[-1]) > float(cl2.iloc[-2]):
+                patterns.append(("BEARISH ENGULFING", "bearish", "Bearish Engulfing — sinyal jual kuat 🔴"))
+    if len(cl2) >= 3:
+        if is_bear(-3) and body(-3) > candle(-3)*0.6 and body(-2) < candle(-2)*0.3 and is_bull(-1) and body(-1) > candle(-1)*0.6:
+            patterns.append(("MORNING STAR", "bullish", "Morning Star — reversal bullish kuat ⭐🌅"))
+        if is_bull(-3) and body(-3) > candle(-3)*0.6 and body(-2) < candle(-2)*0.3 and is_bear(-1) and body(-1) > candle(-1)*0.6:
+            patterns.append(("EVENING STAR", "bearish", "Evening Star — reversal bearish 🌆"))
+        if all(is_bull(-i) for i in [1,2,3]) and float(cl2.iloc[-1]) > float(cl2.iloc[-2]) > float(cl2.iloc[-3]):
+            patterns.append(("THREE WHITE SOLDIERS", "bullish", "3 White Soldiers — tren naik kuat 💪"))
+        if all(is_bear(-i) for i in [1,2,3]) and float(cl2.iloc[-1]) < float(cl2.iloc[-2]) < float(cl2.iloc[-3]):
+            patterns.append(("THREE BLACK CROWS", "bearish", "3 Black Crows — tren turun kuat 🐦"))
+
+    candle_bull = sum(1 for p in patterns if p[1] == "bullish")
+    candle_bear = sum(1 for p in patterns if p[1] == "bearish")
+    candle_bias = "bullish" if candle_bull > candle_bear else ("bearish" if candle_bear > candle_bull else "neutral")
+
+    return {
+        "kode":              kode,
+        "name":              name,
+        "current":           current,
+        "prev":              prev,
+        "chg_pct":           chg_pct,
+        "rsi":               rsi,
+        "macd":              macd_val,
+        "signal":            signal_val,
+        "macd_hist":         macd_hist,
+        "macd_hist_prev":    macd_hist_prev,
+        "macd_golden_cross": macd_golden_cross,
+        "ma20":              ma20,
+        "ma50":              ma50,
+        "support":           support,
+        "resistance":        resistance,
+        "vol_ratio":         vol_ratio,
+        "bb_upper":          bb_upper,
+        "bb_lower":          bb_lower,
+        "bb_mid":            bb_mid_v,
+        "bb_pct":            bb_pct,
+        "bb_width":          bb_width,
+        "bb_squeeze":        bb_squeeze,
+        "patterns":          patterns,
+        "candle_bias":       candle_bias,
+        "pbv":               pbv,
+        "per":               per,
+        "hist":              hist.tail(60),
+    }
 
 def analyze(d: dict, entry: float, cl_pct: float, tp_pct: float) -> dict:
     """
