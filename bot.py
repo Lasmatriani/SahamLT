@@ -26,8 +26,9 @@ ALLOWED_IDS = set(map(int, os.environ.get("ALLOWED_USER_IDS", "").split(","))) i
 WIB         = pytz.timezone("Asia/Jakarta")
 
 # Default CL/TP %
-DEFAULT_CL_PCT  = float(os.environ.get("DEFAULT_CL_PCT",  "-7"))
-DEFAULT_TP_PCT  = float(os.environ.get("DEFAULT_TP_PCT",  "15"))
+DEFAULT_CL_PCT    = float(os.environ.get("DEFAULT_CL_PCT",  "-7"))
+DEFAULT_TP_PCT    = float(os.environ.get("DEFAULT_TP_PCT",  "15"))
+FINNHUB_API_KEY   = os.environ.get("FINNHUB_API_KEY", "")
 
 # ── Persistent Storage (Railway Volume) ──────────────────────────────────
 # Railway: tambahkan Volume di Settings → Volumes, mount path /data
@@ -104,31 +105,174 @@ def ticker_id(kode: str) -> str:
 def get_price_data(kode: str) -> dict | None:
     """
     Ambil data saham dari multiple sumber:
-    1. IDX API (tidak resmi tapi reliable dari server cloud)
-    2. yfinance sebagai fallback
+    1. Finnhub (primary — proper API, tidak diblokir cloud)
+    2. Stooq (fallback)
+    3. yfinance (last resort)
     """
-    import requests
-
     kode = kode.upper().strip()
 
-    # ── Sumber 1: IDX API tidak resmi ────────────────────────────────────
-    try:
-        d = _fetch_from_idx(kode)
-        if d:
-            return d
-    except Exception as e:
-        logger.warning(f"IDX API gagal untuk {kode}: {e}")
+    for source, func in [
+        ("Finnhub",  lambda: _fetch_from_finnhub(kode)),
+        ("Stooq",    lambda: _fetch_from_stooq(kode)),
+        ("yfinance", lambda: _fetch_from_yfinance(kode)),
+    ]:
+        try:
+            logger.info(f"Trying {source} for {kode}...")
+            d = func()
+            if d:
+                logger.info(f"{source} SUCCESS for {kode}")
+                return d
+            logger.warning(f"{source} returned no data for {kode}")
+        except Exception as e:
+            logger.warning(f"{source} failed for {kode}: {e}")
 
-    # ── Sumber 2: yfinance sebagai fallback ──────────────────────────────
-    try:
-        d = _fetch_from_yfinance(kode)
-        if d:
-            return d
-    except Exception as e:
-        logger.warning(f"yfinance gagal untuk {kode}: {e}")
-
-    logger.error(f"Semua sumber data gagal untuk {kode}")
+    logger.error(f"All sources failed for {kode}")
     return None
+
+
+def _fetch_from_finnhub(kode: str) -> dict | None:
+    """
+    Fetch dari Finnhub API — proper API key, reliable dari cloud.
+    IDX Indonesia format: HATM.JK
+    """
+    import requests, time
+
+    if not FINNHUB_API_KEY:
+        logger.warning("FINNHUB_API_KEY tidak diset")
+        return None
+
+    headers = {"X-Finnhub-Token": FINNHUB_API_KEY}
+    base    = "https://finnhub.io/api/v1"
+    symbol  = f"{kode}.JK"   # format IDX di Finnhub
+
+    # ── Harga terkini (quote)
+    r = requests.get(f"{base}/quote", params={"symbol": symbol}, headers=headers, timeout=10)
+    r.raise_for_status()
+    q = r.json()
+    logger.info(f"Finnhub quote {symbol}: {q}")
+
+    current = float(q.get("c", 0) or 0)   # current price
+    prev    = float(q.get("pc", 0) or 0)  # previous close
+
+    if current == 0:
+        # Coba format tanpa .JK
+        r2 = requests.get(f"{base}/quote", params={"symbol": kode}, headers=headers, timeout=10)
+        r2.raise_for_status()
+        q2 = r2.json()
+        current = float(q2.get("c", 0) or 0)
+        prev    = float(q2.get("pc", 0) or 0)
+        symbol  = kode
+        if current == 0:
+            return None
+
+    chg_pct = ((current - prev) / prev * 100) if prev > 0 else 0.0
+
+    # ── Data historis candle (180 hari)
+    now       = int(time.time())
+    from_ts   = now - (180 * 24 * 3600)
+
+    r3 = requests.get(
+        f"{base}/stock/candle",
+        params={"symbol": symbol, "resolution": "D", "from": from_ts, "to": now},
+        headers=headers, timeout=15
+    )
+    r3.raise_for_status()
+    candles = r3.json()
+    logger.info(f"Finnhub candles status: {candles.get('s')} count={len(candles.get('c',[]))}")
+
+    if candles.get("s") != "ok" or not candles.get("c"):
+        return None
+
+    closes  = pd.Series(candles["c"], dtype=float)
+    opens   = pd.Series(candles["o"], dtype=float)
+    highs   = pd.Series(candles["h"], dtype=float)
+    lows    = pd.Series(candles["l"], dtype=float)
+    volumes = pd.Series(candles["v"], dtype=float)
+    dates   = pd.to_datetime(candles["t"], unit="s")
+
+    hist_df = pd.DataFrame({
+        "Open": opens, "High": highs, "Low": lows,
+        "Close": closes, "Volume": volumes
+    }, index=dates).dropna()
+
+    if len(hist_df) < 20:
+        logger.warning(f"Finnhub: not enough data ({len(hist_df)} rows) for {kode}")
+        return None
+
+    # ── Fundamental (P/E, P/BV)
+    try:
+        rf = requests.get(
+            f"{base}/stock/metric",
+            params={"symbol": symbol, "metric": "all"},
+            headers=headers, timeout=10
+        )
+        rf.raise_for_status()
+        metrics = rf.json().get("metric", {})
+        per = metrics.get("peBasicExclExtraTTM") or metrics.get("peTTM")
+        pbv = metrics.get("pbQuarterly") or metrics.get("pb")
+        name = kode
+        # Coba ambil nama perusahaan
+        rp = requests.get(f"{base}/stock/profile2", params={"symbol": symbol}, headers=headers, timeout=10)
+        rp.raise_for_status()
+        profile = rp.json()
+        name = profile.get("name", kode)
+    except Exception as e:
+        logger.warning(f"Finnhub fundamental error: {e}")
+        per = pbv = None
+        name = kode
+
+    return _calculate_indicators(kode, name, current, prev, chg_pct, hist_df, pbv, per)
+
+
+def _fetch_from_stooq(kode: str) -> dict | None:
+    """
+    Fetch dari Stooq — reliable dari server cloud, tidak butuh API key.
+    Format ticker IDX di Stooq: HATM.ID
+    """
+    import requests, io
+
+    ticker = kode.upper() + ".ID"
+    url = (
+        f"https://stooq.com/q/d/l/"
+        f"?s={ticker}&i=d"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+
+    r = requests.get(url, headers=headers, timeout=15)
+    r.raise_for_status()
+
+    # Stooq return CSV
+    text = r.text.strip()
+    if not text or "No data" in text or len(text) < 50:
+        logger.warning(f"Stooq: no data for {ticker}")
+        return None
+
+    hist_df = pd.read_csv(
+        io.StringIO(text),
+        parse_dates=["Date"],
+        index_col="Date"
+    )
+    hist_df.columns = [c.strip().capitalize() for c in hist_df.columns]
+
+    # Rename kolom jika perlu
+    col_map = {"Open":"Open","High":"High","Low":"Low","Close":"Close","Volume":"Volume"}
+    hist_df = hist_df.rename(columns={c: col_map.get(c, c) for c in hist_df.columns})
+
+    if "Close" not in hist_df.columns or len(hist_df) < 20:
+        logger.warning(f"Stooq: insufficient data for {ticker} ({len(hist_df)} rows)")
+        return None
+
+    hist_df = hist_df.sort_index()
+    hist_df = hist_df[["Open","High","Low","Close","Volume"]].dropna()
+
+    current = float(hist_df["Close"].iloc[-1])
+    prev    = float(hist_df["Close"].iloc[-2])
+    chg_pct = ((current - prev) / prev) * 100
+
+    logger.info(f"Stooq: {kode} price={current} rows={len(hist_df)}")
+    return _calculate_indicators(kode, kode, current, prev, chg_pct, hist_df, None, None)
 
 
 def _fetch_from_idx(kode: str) -> dict | None:
@@ -141,60 +285,75 @@ def _fetch_from_idx(kode: str) -> dict | None:
         "Referer": "https://www.idx.co.id/",
     }
 
-    # Fetch harga terkini dari IDX
-    url_summary = (
-        f"https://www.idx.co.id/primary/TradingSummary/GetStockSummary"
-        f"?start=0&length=1&code={kode}&lang=id"
-    )
-    r = requests.get(url_summary, headers=headers, timeout=10)
-    r.raise_for_status()
-    data = r.json()
+    try:
+        # Fetch harga terkini dari IDX
+        url_summary = (
+            f"https://www.idx.co.id/primary/TradingSummary/GetStockSummary"
+            f"?start=0&length=1&code={kode}&lang=id"
+        )
+        logger.info(f"IDX API: fetching summary for {kode}")
+        r = requests.get(url_summary, headers=headers, timeout=15)
+        logger.info(f"IDX API summary status: {r.status_code}")
+        r.raise_for_status()
+        data = r.json()
+        logger.info(f"IDX API summary data keys: {list(data.keys()) if data else 'empty'}")
 
-    if not data.get("data"):
+        if not data.get("data"):
+            logger.warning(f"IDX API: no data for {kode}")
+            return None
+
+        stock = data["data"][0]
+        current = float(stock.get("IndexLastPrice", 0) or stock.get("LastPrice", 0) or 0)
+        prev    = float(stock.get("PreviousPrice", current) or current)
+        logger.info(f"IDX API: {kode} price={current} prev={prev}")
+
+        if current == 0:
+            logger.warning(f"IDX API: price=0 for {kode}")
+            return None
+
+        chg_pct = ((current - prev) / prev * 100) if prev > 0 else 0.0
+
+        # Fetch data historis dari IDX
+        url_hist = (
+            f"https://www.idx.co.id/primary/StockData/GetChartStockbyCode"
+            f"?indexCode={kode}&tradingDate=&period=180&language=id"
+        )
+        logger.info(f"IDX API: fetching history for {kode}")
+        r2 = requests.get(url_hist, headers=headers, timeout=15)
+        logger.info(f"IDX API history status: {r2.status_code}")
+        r2.raise_for_status()
+        hist_data = r2.json()
+        logger.info(f"IDX API history keys: {list(hist_data.keys()) if hist_data else 'empty'}")
+
+        if not hist_data.get("ChartData"):
+            logger.warning(f"IDX API: no ChartData for {kode}")
+            return None
+
+        chart = hist_data["ChartData"]
+        logger.info(f"IDX API: got {len(chart)} candles for {kode}")
+
+        closes  = pd.Series([float(c.get("close", 0) or 0) for c in chart], dtype=float)
+        opens   = pd.Series([float(c.get("open",  0) or 0) for c in chart], dtype=float)
+        highs   = pd.Series([float(c.get("high",  0) or 0) for c in chart], dtype=float)
+        lows    = pd.Series([float(c.get("low",   0) or 0) for c in chart], dtype=float)
+        volumes = pd.Series([float(c.get("volume",0) or 0) for c in chart], dtype=float)
+        dates   = pd.to_datetime([c.get("date","") for c in chart], errors="coerce")
+
+        hist_df = pd.DataFrame({
+            "Open": opens, "High": highs, "Low": lows,
+            "Close": closes, "Volume": volumes
+        }, index=dates).dropna()
+
+        if len(hist_df) < 20:
+            logger.warning(f"IDX API: not enough data ({len(hist_df)} rows) for {kode}")
+            return None
+
+        name = stock.get("StockName", kode)
+        return _calculate_indicators(kode, name, current, prev, chg_pct, hist_df, None, None)
+
+    except Exception as e:
+        logger.error(f"IDX API error for {kode}: {type(e).__name__}: {e}")
         return None
-
-    stock = data["data"][0]
-    current  = float(stock.get("IndexLastPrice", 0) or stock.get("LastPrice", 0) or 0)
-    prev     = float(stock.get("PreviousPrice", current) or current)
-    if current == 0:
-        return None
-
-    chg_pct = ((current - prev) / prev * 100) if prev > 0 else 0.0
-
-    # Fetch data historis dari IDX untuk hitung indikator
-    url_hist = (
-        f"https://www.idx.co.id/primary/StockData/GetChartStockbyCode"
-        f"?indexCode={kode}&tradingDate=&period=180&language=id"
-    )
-    r2 = requests.get(url_hist, headers=headers, timeout=10)
-    r2.raise_for_status()
-    hist_data = r2.json()
-
-    if not hist_data.get("ChartData"):
-        return None
-
-    chart = hist_data["ChartData"]
-    closes  = pd.Series([float(c.get("close", 0) or 0) for c in chart], dtype=float)
-    opens   = pd.Series([float(c.get("open",  0) or 0) for c in chart], dtype=float)
-    highs   = pd.Series([float(c.get("high",  0) or 0) for c in chart], dtype=float)
-    lows    = pd.Series([float(c.get("low",   0) or 0) for c in chart], dtype=float)
-    volumes = pd.Series([float(c.get("volume",0) or 0) for c in chart], dtype=float)
-    dates   = pd.to_datetime([c.get("date","") for c in chart], errors="coerce")
-
-    # Buat DataFrame seperti format yfinance
-    hist_df = pd.DataFrame({
-        "Open": opens, "High": highs, "Low": lows,
-        "Close": closes, "Volume": volumes
-    }, index=dates).dropna()
-
-    if len(hist_df) < 20:
-        return None
-
-    name = stock.get("StockName", kode)
-    pbv  = None
-    per  = None
-
-    return _calculate_indicators(kode, name, current, prev, chg_pct, hist_df, pbv, per)
 
 
 def _fetch_from_yfinance(kode: str) -> dict | None:
