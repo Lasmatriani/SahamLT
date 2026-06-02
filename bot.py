@@ -144,7 +144,7 @@ def _fetch_from_itick(kode: str) -> dict | None:
         return None
 
     headers  = {"token": ITICK_API_KEY}
-    base     = "https://api.itick.org"
+    base     = "https://api-free.itick.org"
 
     # ── Harga terkini
     r = requests.get(
