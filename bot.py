@@ -191,12 +191,12 @@ r2 = requests.get(
     bars = kline["data"]
     # Format iTick: [timestamp, open, high, low, close, volume]
     try:
-opens   = pd.Series([float(b["o"]) for b in bars], dtype=float)
-highs   = pd.Series([float(b["h"]) for b in bars], dtype=float)
-lows    = pd.Series([float(b["l"]) for b in bars], dtype=float)
-closes  = pd.Series([float(b["c"]) for b in bars], dtype=float)
-volumes = pd.Series([float(b["v"]) for b in bars], dtype=float)
-dates   = pd.to_datetime([int(b["t"]) for b in bars], unit="ms")
+        opens   = pd.Series([float(b["o"]) for b in bars], dtype=float)
+        highs   = pd.Series([float(b["h"]) for b in bars], dtype=float)
+        lows    = pd.Series([float(b["l"]) for b in bars], dtype=float)
+        closes  = pd.Series([float(b["c"]) for b in bars], dtype=float)
+        volumes = pd.Series([float(b["v"]) for b in bars], dtype=float)
+        dates   = pd.to_datetime([int(b["t"]) for b in bars], unit="ms")
     except (IndexError, TypeError) as e:
         logger.warning(f"iTick: error parsing kline data: {e}")
         return None
