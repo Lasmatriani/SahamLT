@@ -146,22 +146,26 @@ def _fetch_from_itick(kode: str) -> dict | None:
     headers  = {"token": ITICK_API_KEY}
     base     = "https://api-free.itick.org"
 
-    # ── Harga terkini
-    r = requests.get(
-        f"{base}/stock/quote",
-        params={"region": "ID", "code": kode},
-        headers=headers, timeout=10
-    )
-    r.raise_for_status()
-    q = r.json()
-    logger.info(f"iTick quote {kode}: code={q.get('code')} data={q.get('data',{})}")
+    # ── 1. Ambil Harga Terkini (Quote)
+    try:
+        r = requests.get(
+            f"{base}/stock/quote",
+            params={"region": "ID", "code": kode},
+            headers=headers, timeout=10
+        )
+        r.raise_for_status()
+        q = r.json()
+        logger.info(f"iTick quote {kode}: code={q.get('code')} data={q.get('data',{})}")
+    except Exception as e:
+        logger.warning(f"iTick quote request failed for {kode}: {e}")
+        return None
 
     if q.get("code") != 0 or not q.get("data"):
         logger.warning(f"iTick: no quote data for {kode}")
         return None
 
     qd      = q["data"]
-    current = float(qd.get("ld", 0) or qd.get("c", 0) or 0)
+    current = float(qd.get("ld", 0) or qd.get("c", 0) or qd.get("p", 0) or 0)
     prev    = float(qd.get("p", 0) or qd.get("pc", 0) or current)
     name    = qd.get("n", kode)
 
@@ -170,41 +174,58 @@ def _fetch_from_itick(kode: str) -> dict | None:
 
     chg_pct = ((current - prev) / prev * 100) if prev > 0 else 0.0
 
-    # ── Data historis (180 hari)
-    now       = int(time.time())
-    from_ts   = now - (180 * 24 * 3600)
+    # ── 2. Ambil Data Historis (Kline)
+    now = int(time.time()) # Timestamp dalam detik (10 digit)
 
+    # Perbaikan parameter 'et' menggunakan satuan detik, bukan milidetik
+    # Pastikan kType "8" sudah sesuai dokumentasi iTick Anda untuk data harian (Daily)
     r2 = requests.get(
         f"{base}/stock/kline",
-        params={"region": "ID", "code": kode, "kType": "8",
-                "limit": "180", "et": str(now * 1000)},
+        params={
+            "region": "ID", 
+            "code": kode, 
+            "kType": "8",     # Jika "8" masih zonk, coba ganti ke "5" atau "1d" sesuai dokumentasi tipe daily iTick
+            "limit": "180", 
+            "et": str(now)    # <-- DIUBAH: Menggunakan detik (now), bukan milidetik (now * 1000)
+        },
         headers=headers, timeout=15
     )
     r2.raise_for_status()
     kline = r2.json()
-    logger.info(f"iTick kline {kode}: code={kline.get('code')} count={len(kline.get('data',[]))}")
+    
+    raw_bars = kline.get("data", [])
+    logger.info(f"iTick kline {kode}: code={kline.get('code')} count={len(raw_bars)}")
 
-    if kline.get("code") != 0 or not kline.get("data"):
+    if kline.get("code") != 0 or not raw_bars:
         logger.warning(f"iTick: no kline data for {kode}")
         return None
 
-    bars = kline["data"]
-    # Format iTick: [timestamp, open, high, low, close, volume]
+    # ── 3. Parsing Data Kline ke DataFrame
     try:
-        opens   = pd.Series([float(b["o"]) for b in bars], dtype=float)
-        highs   = pd.Series([float(b["h"]) for b in bars], dtype=float)
-        lows    = pd.Series([float(b["l"]) for b in bars], dtype=float)
-        closes  = pd.Series([float(b["c"]) for b in bars], dtype=float)
-        volumes = pd.Series([float(b["v"]) for b in bars], dtype=float)
-        dates   = pd.to_datetime([int(b["t"]) for b in bars], unit="ms")
-    except (IndexError, TypeError) as e:
+        # iTick biasanya mengembalikan data dalam bentuk list of dict atau list of list
+        # Kode di bawah ini menangani format objek kline iTick yang menggunakan key {'o', 'h', 'l', 'c', 'v', 't'}
+        opens   = pd.Series([float(b.get("o", 0)) for b in raw_bars], dtype=float)
+        highs   = pd.Series([float(b.get("h", 0)) for b in raw_bars], dtype=float)
+        lows    = pd.Series([float(b.get("l", 0)) for b in raw_bars], dtype=float)
+        closes  = pd.Series([float(b.get("c", 0)) for b in raw_bars], dtype=float)
+        volumes = pd.Series([float(b.get("v", 0)) for b in raw_bars], dtype=float)
+        
+        # Deteksi otomatis jika timestamp dari server berbentuk milidetik atau detik
+        sample_ts = int(raw_bars[0].get("t", 0))
+        ts_unit = "ms" if sample_ts > 9999999999 else "s"
+        dates   = pd.to_datetime([int(b.get("t", 0)) for b in raw_bars], unit=ts_unit)
+        
+    except Exception as e:
         logger.warning(f"iTick: error parsing kline data: {e}")
         return None
 
     hist_df = pd.DataFrame({
         "Open": opens, "High": highs, "Low": lows,
         "Close": closes, "Volume": volumes
-    }, index=dates).sort_index().dropna()
+    }, index=dates).sort_index()
+    
+    # Hapus baris duplikat atau index kosong
+    hist_df = hist_df[~hist_df.index.duplicated(keep='last')].dropna()
 
     if len(hist_df) < 20:
         logger.warning(f"iTick: not enough data ({len(hist_df)} rows)")
