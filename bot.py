@@ -1,744 +1,1140 @@
-"""
-Bot Sinyal Saham IDX - Versi 3.0
-Upgrade: Dynamic stock selection dari CSV GitHub (695 saham)
-Fix: periode "1y" untuk cut loss & take profit
-"""
-
+import os
+import json
+import asyncio
+import logging
+from datetime import datetime, time
+import pytz
 import yfinance as yf
-
-# Fix Yahoo Finance blocking dari cloud server
-import requests
-yf_session = requests.Session()
-yf_session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-})
 import pandas as pd
 import numpy as np
-import requests
-import schedule
-import time
-import json
-import os
-from datetime import datetime, date
-import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, filters, ContextTypes
+)
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# ── Config ──────────────────────────────────────────────────────────────
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# KONFIGURASI
-# ============================================================
-TELEGRAM_TOKEN = "8862850675:AAFnZx9bLrISilkxgHlwPamemA73-aSzQgc"
-CHAT_ID        = "906923710"
-PORTFOLIO_FILE = "portfolio.json"
-
-# URL CSV di GitHub — ganti USERNAME dan REPO sesuai milikmu
-CSV_URL = "https://raw.githubusercontent.com/Lasmatriani/SahamLT/main/saham_idx.csv"
-
-# Cache lokal supaya tidak download ulang tiap scan
-_cache_saham = None
-_cache_time  = None
-CACHE_HOURS  = 24  # refresh sekali sehari
-
-# ============================================================
-# FUNGSI TELEGRAM
-# ============================================================
-def kirim_pesan(pesan):
-    try:
-        url     = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": pesan, "parse_mode": "HTML"}
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code != 200:
-            logger.error(f"Gagal kirim pesan: {r.text}")
-    except Exception as e:
-        logger.error(f"Error Telegram: {e}")
-
-# ============================================================
-# FUNGSI LOAD CSV SAHAM
-# ============================================================
-def load_saham_csv():
-    """Download CSV dari GitHub, return dict {sektor: [ticker, ...]}"""
-    global _cache_saham, _cache_time
-
-    # Pakai cache kalau masih fresh
-    if _cache_saham and _cache_time:
-        selisih = (datetime.now() - _cache_time).total_seconds() / 3600
-        if selisih < CACHE_HOURS:
-            logger.info(f"Pakai cache saham ({len(_cache_saham)} sektor)")
-            return _cache_saham
-
-    logger.info("Download CSV saham dari GitHub...")
-    try:
-        r = requests.get(CSV_URL, timeout=15)
-        r.raise_for_status()
-
-        lines = r.text.strip().split("\n")
-        sektor_dict = {}
-
-        for line in lines[1:]:   # skip header
-            parts = line.strip().split(",")
-            if len(parts) < 2:
-                continue
-            ticker = parts[0].strip()
-            sektor = parts[1].strip()
-            if sektor not in sektor_dict:
-                sektor_dict[sektor] = []
-            sektor_dict[sektor].append(ticker)
-
-        total = sum(len(v) for v in sektor_dict.values())
-        logger.info(f"CSV loaded: {total} saham, {len(sektor_dict)} sektor")
-
-        _cache_saham = sektor_dict
-        _cache_time  = datetime.now()
-        return sektor_dict
-
-    except Exception as e:
-        logger.error(f"Gagal load CSV: {e}")
-        kirim_pesan(f"⚠️ Gagal download CSV saham dari GitHub.\nError: {e}\n\nBot tetap berjalan tapi scan dilewati.")
-        return {}
-
-# ============================================================
-# FUNGSI AMBIL DATA & INDIKATOR
-# ============================================================
-def ambil_data(ticker, periode="1y", retry=2):
-    for attempt in range(retry):
-        try:
-            df = yf.Ticker(ticker, session=yf_session).history(period=periode)
-            if not df.empty and len(df) >= 50:
-                return df
-            if attempt < retry - 1:
-                time.sleep(2)
-        except Exception as e:
-            logger.error(f"Error ambil {ticker} (attempt {attempt+1}): {e}")
-            if attempt < retry - 1:
-                time.sleep(3)
-    return None
-
-def hitung_indikator(df):
-    df = df.copy()
-    df['MA50']     = df['Close'].rolling(50).mean()
-    df['MA200']    = df['Close'].rolling(200).mean()
-    df['MA20']     = df['Close'].rolling(20).mean()
-    df['Vol_MA20'] = df['Volume'].rolling(20).mean()
-
-    delta = df['Close'].diff()
-    gain  = delta.where(delta > 0, 0).rolling(14).mean()
-    loss  = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    df['RSI'] = 100 - (100 / (1 + gain / loss))
-
-    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD']      = ema12 - ema26
-    df['Signal']    = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['MACD_Hist'] = df['MACD'] - df['Signal']
-    return df
-
-# ============================================================
-# SCORING SEKTOR HOT (pakai 5 proxy per sektor)
-# ============================================================
-def scoring_sektor(sektor_dict):
-    """Score tiap sektor, return list [(sektor, skor)] sorted desc"""
-    logger.info("Scoring sektor...")
-    hasil = {}
-
-    for sektor, tickers in sektor_dict.items():
-        proxy   = tickers[:5]
-        total   = 0
-        valid   = 0
-
-        for t in proxy:
-            df = ambil_data(t, "6mo")
-            if df is None or len(df) < 20:
-                continue
-            df  = hitung_indikator(df)
-            lat = df.iloc[-1]
-            prv = df.iloc[-2]
-            valid += 1
-
-            if lat['Close'] > prv['Close']:       total += 2   # naik hari ini
-            if lat['Close'] > lat['MA50']:         total += 1   # di atas MA50
-            if lat['Volume'] > lat['Vol_MA20']:    total += 1   # volume naik
-            if lat['MACD']  > lat['Signal']:       total += 1   # MACD positif
-            time.sleep(1.5)
-
-        if valid:
-            hasil[sektor] = round(total / valid, 2)
-
-    return sorted(hasil.items(), key=lambda x: x[1], reverse=True)
-
-def pilih_saham_dinamis(sektor_dict):
-    """Pilih saham dari sektor hot, kirim ringkasan ke Telegram"""
-    ranking = scoring_sektor(sektor_dict)
-    if not ranking:
-        # Fallback: ambil semua
-        all_tickers = [t for v in sektor_dict.values() for t in v]
-        return all_tickers
-
-    # Bangun pesan kondisi sektor
-    pesan = "🌡️ <b>Kondisi Sektor Hari Ini:</b>\n━━━━━━━━━━━━━━━━━━\n"
-    for nama, skor in ranking:
-        if skor >= 2.5:
-            label = "🔥 HOT"
-        elif skor >= 1.5:
-            label = "🟡 WARM"
-        else:
-            label = "❄️ COLD"
-        bar    = "█" * int(skor) + "░" * (5 - int(skor))
-        jumlah = len(sektor_dict.get(nama, []))
-        pesan += f"{label} <b>{nama}</b> ({jumlah} saham)\n    {bar} {skor:.1f}/5\n\n"
-    kirim_pesan(pesan)
-
-    sektor_hot  = [n for n, s in ranking if s >= 2.5]
-    sektor_warm = [n for n, s in ranking if 1.5 <= s < 2.5]
-
-    terpilih = []
-    for s in sektor_hot:
-        terpilih += sektor_dict.get(s, [])
-    if len(sektor_hot) < 3:
-        for s in sektor_warm[:2]:
-            terpilih += sektor_dict.get(s, [])[:10]
-
-    # Kalau semua cold, ambil top 3 sektor saja
-    if not terpilih:
-        kirim_pesan("❄️ <b>Semua sektor sedang cold.</b>\nBot tetap scan top 3 sektor terbaik.")
-        for n, _ in ranking[:3]:
-            terpilih += sektor_dict.get(n, [])[:8]
-
-    # Hapus duplikat, pertahankan urutan
-    seen = set()
-    hasil = []
-    for t in terpilih:
-        if t not in seen:
-            seen.add(t)
-            hasil.append(t)
-
-    logger.info(f"Saham terpilih: {len(hasil)} dari {len(sektor_hot)} sektor hot")
-    return hasil
-
-# ============================================================
-# ANALISIS SINYAL BELI
-# ============================================================
-def analisis_beli(ticker):
-    df = ambil_data(ticker, "1y")
-    if df is None or len(df) < 50:
-        return None
-
-    df  = hitung_indikator(df)
-    lat = df.iloc[-1]
-    prv = df.iloc[-2]
-    rsi = lat['RSI']
-
-    skor   = 0
-    detail = []
-
-    if lat['MA50'] > lat['MA200']:
-        skor += 1; detail.append("✅ Golden Cross aktif")
-    else:
-        detail.append("❌ Belum Golden Cross")
-
-    if lat['Close'] > lat['MA50']:
-        skor += 1; detail.append("✅ Harga > MA50")
-    else:
-        detail.append("❌ Harga < MA50")
-
-    if 40 <= rsi <= 60:
-        skor += 1; detail.append(f"✅ RSI {rsi:.1f} (ideal)")
-    else:
-        detail.append(f"⚠️ RSI {rsi:.1f} ({'overbought' if rsi > 60 else 'oversold'})")
-
-    if lat['MACD'] > lat['Signal'] and prv['MACD'] <= prv['Signal']:
-        skor += 1; detail.append("✅ MACD Bullish Cross baru!")
-    elif lat['MACD'] > lat['Signal']:
-        skor += 0.5; detail.append("✅ MACD di atas Signal")
-    else:
-        detail.append("❌ MACD Bearish")
-
-    if lat['Volume'] > lat['Vol_MA20'] * 1.2:
-        skor += 1
-        pct = ((lat['Volume'] / lat['Vol_MA20']) - 1) * 100
-        detail.append(f"✅ Volume +{pct:.0f}% di atas rata-rata")
-    else:
-        detail.append("❌ Volume lemah")
-
-    return {
-        'ticker': ticker, 'harga': lat['Close'], 'skor': skor,
-        'rsi': rsi, 'ma50': lat['MA50'], 'ma200': lat['MA200'],
-        'volume': lat['Volume'], 'vol_ma20': lat['Vol_MA20'], 'detail': detail
-    }
-
-# ============================================================
-# ANALISIS CUT LOSS
-# ============================================================
-def analisis_cutloss(ticker, harga_beli):
-    df = ambil_data(ticker, "1y")
-    if df is None or len(df) < 50:
-        return None
-
-    df  = hitung_indikator(df)
-    lat = df.iloc[-1]; prv = df.iloc[-2]; prv2 = df.iloc[-3]
-
-    harga_skrg = lat['Close']
-    pnl        = ((harga_skrg - harga_beli) / harga_beli) * 100
-    pintu      = 0
-    triggers   = []
-
-    # Pintu 1: Hard Stop -7%
-    if pnl <= -7:
-        pintu += 1
-        triggers.append(f"🚪 Pintu 1: Hard Stop ({pnl:.1f}%)")
-
-    # Pintu 2: Breakdown teknikal
-    death_cross    = lat['MA50'] < lat['MA200']
-    bawah_ma50_2hr = lat['Close'] < lat['MA50'] and prv['Close'] < prv['MA50']
-    macd_bearish   = lat['MACD'] < lat['Signal'] and prv['MACD'] >= prv['Signal']
-
-    if death_cross or bawah_ma50_2hr or macd_bearish:
-        pintu += 1
-        if death_cross:    triggers.append("🚪 Pintu 2: Death Cross!")
-        if bawah_ma50_2hr: triggers.append("🚪 Pintu 2: Harga < MA50 (2 hari)")
-        if macd_bearish:   triggers.append("🚪 Pintu 2: MACD Bearish Cross")
-
-    # Pintu 3: Momentum lemah
-    rsi_lemah  = lat['RSI'] < 35
-    vol_jual   = sum(1 for i in [-1,-2,-3] if df.iloc[i]['Close'] < df.iloc[i]['Open'])
-    lower_low  = lat['Low'] < prv['Low'] < prv2['Low']
-
-    if rsi_lemah or vol_jual >= 3 or lower_low:
-        pintu += 1
-        if rsi_lemah:   triggers.append(f"🚪 Pintu 3: RSI lemah ({lat['RSI']:.1f})")
-        if vol_jual>=3: triggers.append("🚪 Pintu 3: Volume jual dominan 3 hari")
-        if lower_low:   triggers.append("🚪 Pintu 3: Lower Low terkonfirmasi")
-
-    return {
-        'ticker': ticker, 'harga_beli': harga_beli,
-        'harga_sekarang': harga_skrg, 'pnl_pct': pnl,
-        'pintu_terbuka': pintu, 'triggers': triggers, 'rsi': lat['RSI']
-    }
-
-# ============================================================
-# ANALISIS TAKE PROFIT
-# ============================================================
-def analisis_takeprofit(ticker, harga_beli):
-    df = ambil_data(ticker, "1y")
-    if df is None or len(df) < 50:
-        return None
-
-    df  = hitung_indikator(df)
-    lat = df.iloc[-1]; prv = df.iloc[-2]
-
-    harga_skrg = lat['Close']
-    profit     = ((harga_skrg - harga_beli) / harga_beli) * 100
-    if profit <= 0:
-        return None
-
-    skor_jual = 0; triggers = []; rek_jual = 0
-
-    if profit >= 15:
-        skor_jual += 1
-        triggers.append(f"🎯 Target 1: Profit +{profit:.1f}%!")
-        rek_jual = 50
-
-    if lat['RSI'] > 75:
-        skor_jual += 1
-        triggers.append(f"🎯 Target 2: RSI {lat['RSI']:.1f} (overbought)")
-        rek_jual = min(rek_jual + 30, 80)
-
-    macd_lemah   = lat['MACD_Hist'] < prv['MACD_Hist'] and lat['MACD'] > lat['Signal']
-    golden_lemah = (lat['MA50'] - lat['MA200']) < (prv['MA50'] - prv['MA200'])
-
-    if macd_lemah or golden_lemah:
-        skor_jual += 1
-        triggers.append("🎯 Target 3: Momentum mulai melemah")
-        rek_jual = min(rek_jual + 20, 100)
-
-    if skor_jual == 0:
-        return None
-
-    return {
-        'ticker': ticker, 'harga_beli': harga_beli,
-        'harga_sekarang': harga_skrg, 'profit_pct': profit,
-        'skor_jual': skor_jual, 'triggers': triggers,
-        'rekomendasi_jual': rek_jual, 'rsi': lat['RSI']
-    }
-
-# ============================================================
-# FORMAT PESAN
-# ============================================================
-def fmt_beli(d):
-    pct = ((d['volume']/d['vol_ma20'])-1)*100
-    bintang = "⭐"*int(d['skor'])
-    return f"""🟢 <b>SINYAL BELI KUAT</b>
-━━━━━━━━━━━━━━━━━━
-📌 Saham  : <b>{d['ticker']}</b>
-💰 Harga  : Rp {d['harga']:,.0f}
-📊 Skor   : {d['skor']:.1f}/5 {bintang}
-📈 RSI    : {d['rsi']:.1f}
-📦 Volume : +{pct:.0f}% di atas rata-rata
-
-<b>Detail:</b>
-{chr(10).join(d['detail'])}
-
-⚠️ <i>Bukan rekomendasi investasi. DYOR!</i>""".strip()
-
-def fmt_cutloss(d):
-    i   = min(d['pintu_terbuka']-1, 2)
-    em  = ["⚠️","🔴","🆘"][i]
-    lvl = ["WARNING","CUT LOSS KUAT","CUT LOSS DARURAT"][i]
-    rek = ["Pantau ketat!","Pertimbangkan JUAL sekarang","JUAL SEGERA!"][i]
-    return f"""{em} <b>{lvl}</b>
-━━━━━━━━━━━━━━━━━━
-📌 Saham         : <b>{d['ticker']}</b>
-💰 Harga Beli    : Rp {d['harga_beli']:,.0f}
-📉 Harga Skrg    : Rp {d['harga_sekarang']:,.0f}
-📊 P&L           : {d['pnl_pct']:.1f}%
-🚪 Pintu Terbuka : {d['pintu_terbuka']}/3
-📊 RSI           : {d['rsi']:.1f}
-
-<b>Trigger:</b>
-{chr(10).join(d['triggers'])}
-
-❗ <b>{rek}</b>""".strip()
-
-def fmt_takeprofit(d):
-    bintang = "💰"*d['skor_jual']
-    return f"""💰 <b>SINYAL TAKE PROFIT</b>
-━━━━━━━━━━━━━━━━━━
-📌 Saham       : <b>{d['ticker']}</b>
-💰 Harga Beli  : Rp {d['harga_beli']:,.0f}
-📈 Harga Skrg  : Rp {d['harga_sekarang']:,.0f}
-🎯 Profit      : +{d['profit_pct']:.1f}% {bintang}
-📊 Skor Jual   : {d['skor_jual']}/3
-📊 RSI         : {d['rsi']:.1f}
-
-<b>Trigger:</b>
-{chr(10).join(d['triggers'])}
-
-✅ <b>Rekomendasi: Jual {d['rekomendasi_jual']}% posisi</b>""".strip()
-
-# ============================================================
-# PORTFOLIO
-# ============================================================
-def load_portfolio():
-    if os.path.exists(PORTFOLIO_FILE):
-        with open(PORTFOLIO_FILE) as f:
-            return json.load(f)
+BOT_TOKEN   = os.environ["BOT_TOKEN"]
+ALLOWED_IDS = set(map(int, os.environ.get("ALLOWED_USER_IDS", "").split(","))) if os.environ.get("ALLOWED_USER_IDS") else set()
+WIB         = pytz.timezone("Asia/Jakarta")
+
+# Default CL/TP %
+DEFAULT_CL_PCT  = float(os.environ.get("DEFAULT_CL_PCT",  "-7"))
+DEFAULT_TP_PCT  = float(os.environ.get("DEFAULT_TP_PCT",  "15"))
+
+# ── Persistent Storage (Railway Volume) ──────────────────────────────────
+# Railway: tambahkan Volume di Settings → Volumes, mount path /data
+# Fallback ke ./data/ untuk local dev
+_VOLUME_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/data")
+_LOCAL_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+def _get_data_dir() -> str:
+    if os.path.isdir(_VOLUME_DIR):
+        return _VOLUME_DIR
+    os.makedirs(_LOCAL_DIR, exist_ok=True)
+    return _LOCAL_DIR
+
+def _data_path(fn: str) -> str:
+    return os.path.join(_get_data_dir(), fn)
+
+def load_watchlist() -> dict:
+    """Load watchlist; auto-recover dari backup jika file utama corrupt."""
+    for path in [_data_path("watchlist.json"), _data_path("watchlist.json.bak")]:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                logger.info(f"Watchlist loaded: {len(data)} items dari {path}")
+                return data
+            except Exception as e:
+                logger.warning(f"Load gagal dari {path}: {e}")
+    logger.info("Watchlist kosong, mulai fresh.")
     return {}
 
-def save_portfolio(p):
-    with open(PORTFOLIO_FILE, 'w') as f:
-        json.dump(p, f, indent=2)
-
-# ============================================================
-# SCAN UTAMA
-# ============================================================
-def scan_pagi():
-    logger.info("Scan pagi mulai...")
-    hari = datetime.now().strftime("%A, %d %B %Y")
-    kirim_pesan(f"🌅 <b>Selamat Pagi!</b>\n📅 {hari}\n\n🔍 Memuat daftar saham IDX dari GitHub...")
-
-    sektor_dict = load_saham_csv()
-    if not sektor_dict:
-        return
-
-    total = sum(len(v) for v in sektor_dict.values())
-    kirim_pesan(f"✅ <b>{total} saham</b> dari <b>{len(sektor_dict)} sektor</b> berhasil dimuat.\n\n🌡️ Scoring sektor, sabar sebentar...")
-
-    terpilih = pilih_saham_dinamis(sektor_dict)
-    kirim_pesan(f"📋 Scanning <b>{len(terpilih)} saham</b> dari sektor hot...\nEstimasi ~{len(terpilih)//2} menit ☕")
-
-    sinyal = []
-    for t in terpilih:
-        try:
-            h = analisis_beli(t)
-            if h and h['skor'] >= 4:
-                sinyal.append(h)
-        except Exception as e:
-            logger.error(f"Error scan {t}: {e}")
-        time.sleep(2)
-
-    sinyal.sort(key=lambda x: x['skor'], reverse=True)
-
-    if sinyal:
-        kirim_pesan(f"✅ <b>Ditemukan {len(sinyal)} sinyal beli kuat!</b>")
-        for d in sinyal[:5]:
-            kirim_pesan(fmt_beli(d))
-            time.sleep(1)
-    else:
-        kirim_pesan("📊 <b>Hasil Scan Pagi</b>\n\nBelum ada sinyal beli kuat hari ini.\nMarket mungkin sideways atau bearish.\n\n💡 Tetap pantau portofoliomu ya!")
-
-    scan_portofolio()
-
-def scan_siang():
-    logger.info("Scan siang...")
-    kirim_pesan("📊 <b>Update Siang</b>\n🔍 Monitoring portofolio...")
-    scan_portofolio()
-
-def scan_sore():
-    logger.info("Scan sore...")
-    hari = datetime.now().strftime("%d %B %Y")
-    kirim_pesan(f"🔔 <b>Closing Alert — {hari}</b>\n\nMonitoring posisi sebelum market tutup...")
-    scan_portofolio()
-    kirim_pesan("📋 <b>Recap</b>\nMarket IDX tutup pukul 16.00 WIB.\nPastikan posisimu sudah sesuai strategi! 💪\n\n⏰ Scan berikutnya besok 07.00 WIB")
-
-def scan_portofolio():
-    portfolio = load_portfolio()
-    if not portfolio:
-        kirim_pesan("💼 <b>Portofolio kosong</b>\n\nGunakan /tambah TICKER HARGA\nContoh: /tambah BBCA 6995")
-        return
-
-    ada_sinyal = False
-    for ticker, data in portfolio.items():
-        hb = data['harga_beli']
-
-        tp = analisis_takeprofit(ticker, hb)
-        if tp and tp['skor_jual'] >= 1:
-            kirim_pesan(fmt_takeprofit(tp))
-            ada_sinyal = True; time.sleep(1)
-
-        cl = analisis_cutloss(ticker, hb)
-        if cl and cl['pintu_terbuka'] >= 1:
-            kirim_pesan(fmt_cutloss(cl))
-            ada_sinyal = True; time.sleep(1)
-
-    if not ada_sinyal:
-        kirim_pesan("✅ <b>Portofolio Aman</b>\n\nSemua posisi dalam kondisi normal.\nTidak ada sinyal cut loss atau take profit saat ini. 👍")
-
-# ============================================================
-# COMMAND HANDLER
-# ============================================================
-last_update_id = 0
-
-def cek_perintah():
-    global last_update_id
+def save_watchlist(wl: dict):
+    """Atomic write + backup otomatis."""
+    import shutil
+    primary = _data_path("watchlist.json")
+    tmp     = _data_path("watchlist.json.tmp")
+    backup  = _data_path("watchlist.json.bak")
     try:
-        url    = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-        params = {"offset": last_update_id + 1, "timeout": 5}
-        r      = requests.get(url, params=params, timeout=10).json()
-
-        if not r.get('ok') or not r.get('result'):
-            return
-
-        for upd in r['result']:
-            last_update_id = upd['update_id']
-            if 'message' not in upd:
-                continue
-
-            msg     = upd['message']
-            text    = msg.get('text','').strip()
-            chat_id = str(msg['chat']['id'])
-
-            if chat_id != CHAT_ID:
-                continue
-
-            if text == '/start':
-                kirim_pesan("""🤖 <b>Bot Sinyal Saham IDX v3.0</b>
-
-✨ <b>Fitur:</b>
-📂 695 saham IDX dari CSV GitHub
-🔥 Dynamic scan sektor hot
-✅ Fix cut loss & take profit
-
-<b>Perintah:</b>
-/portofolio — Lihat posisi + P&L
-/tambah BBCA 6995 — Tambah saham
-/hapus BBCA — Hapus saham
-/scan — Scan semua sektor hot
-/scan BBCA — Scan saham tertentu
-/scan BBCA 6995 — Scan + cek CL & TP
-/sektor — Cek kondisi sektor
-/reload — Reload CSV saham terbaru
-/help — Bantuan
-
-⏰ <b>Jadwal otomatis (Senin–Jumat):</b>
-🌅 07.00 — Scan + scoring sektor
-📊 12.00 — Monitor portofolio
-🔔 15.45 — Closing alert""".strip())
-
-            elif text == '/sektor':
-                kirim_pesan("🌡️ Menganalisis sektor... sabar sebentar 😊")
-                sektor_dict = load_saham_csv()
-                if sektor_dict:
-                    ranking = scoring_sektor(sektor_dict)
-                    pesan   = "🌡️ <b>Kondisi Sektor:</b>\n━━━━━━━━━━━━━━━━━━\n"
-                    for nm, sk in ranking:
-                        lbl = "🔥 HOT" if sk>=2.5 else ("🟡 WARM" if sk>=1.5 else "❄️ COLD")
-                        bar = "█"*int(sk) + "░"*(5-int(sk))
-                        pesan += f"{lbl} <b>{nm}</b>\n    {bar} {sk:.1f}/5\n\n"
-                    kirim_pesan(pesan)
-
-            elif text == '/reload':
-                global _cache_saham, _cache_time
-                _cache_saham = None; _cache_time = None
-                sektor_dict  = load_saham_csv()
-                if sektor_dict:
-                    total = sum(len(v) for v in sektor_dict.values())
-                    kirim_pesan(f"✅ CSV berhasil di-reload!\n{total} saham dari {len(sektor_dict)} sektor.")
-
-            elif text == '/portofolio':
-                portfolio = load_portfolio()
-                if not portfolio:
-                    kirim_pesan("💼 Portofolio kosong.\n/tambah BBCA 6995")
-                else:
-                    pesan = "💼 <b>Portofolio:</b>\n━━━━━━━━━━━━━━━━━━\n"
-                    for ticker, data in portfolio.items():
-                        try:
-                            hn  = yf.Ticker(ticker, session=yf_session).history(period="2d")['Close'].iloc[-1]
-                            pnl = ((hn - data['harga_beli']) / data['harga_beli']) * 100
-                            em  = "📈" if pnl >= 0 else "📉"
-                            pesan += f"{em} <b>{ticker}</b>\n"
-                            pesan += f"   Beli : Rp {data['harga_beli']:,.0f}\n"
-                            pesan += f"   Skrg : Rp {hn:,.0f}\n"
-                            pesan += f"   P&L  : {pnl:+.1f}%\n\n"
-                        except:
-                            pesan += f"📌 <b>{ticker}</b> — Rp {data['harga_beli']:,.0f}\n\n"
-                    kirim_pesan(pesan)
-
-            elif text.startswith('/tambah'):
-                parts = text.split()
-                if len(parts) == 3:
-                    t  = parts[1].upper()
-                    if not t.endswith('.JK'): t += '.JK'
-                    try:
-                        hb = float(parts[2])
-                        p  = load_portfolio()
-                        p[t] = {'harga_beli': hb, 'tanggal': str(date.today())}
-                        save_portfolio(p)
-                        kirim_pesan(f"✅ <b>{t}</b> ditambahkan!\n💰 Harga beli: Rp {hb:,.0f}")
-                    except:
-                        kirim_pesan("❌ Format: /tambah BBCA 6995")
-                else:
-                    kirim_pesan("❌ Format: /tambah BBCA 6995")
-
-            elif text.startswith('/hapus'):
-                parts = text.split()
-                if len(parts) == 2:
-                    t = parts[1].upper()
-                    if not t.endswith('.JK'): t += '.JK'
-                    p = load_portfolio()
-                    if t in p:
-                        del p[t]; save_portfolio(p)
-                        kirim_pesan(f"✅ <b>{t}</b> dihapus.")
-                    else:
-                        kirim_pesan(f"❌ {t} tidak ada di portofolio.")
-
-            elif text.startswith("/scan"):
-                parts = text.split()
-
-                if len(parts) == 1:
-                    kirim_pesan("🔍 Scan manual dimulai...")
-                    scan_pagi()
-
-                else:
-                    ticker = parts[1].upper()
-                    if not ticker.endswith(".JK"):
-                        ticker += ".JK"
-
-                    harga_beli = None
-                    if len(parts) == 3:
-                        try:
-                            harga_beli = float(parts[2])
-                        except:
-                            kirim_pesan("❌ Format salah.\nContoh: /scan BBCA atau /scan BBCA 6995")
-                            return
-
-                    if harga_beli is None:
-                        portfolio = load_portfolio()
-                        if ticker in portfolio:
-                            harga_beli = portfolio[ticker]["harga_beli"]
-
-                    kirim_pesan(f"🔍 Scanning <b>{ticker}</b>... sabar sebentar 😊")
-
-                    hasil_beli = analisis_beli(ticker)
-                    logger.info(f"Hasil analisis {ticker}: {hasil_beli}")
-                    if hasil_beli:
-                        if hasil_beli["skor"] >= 4:
-                            kirim_pesan(fmt_beli(hasil_beli))
-                        else:
-                            detail_str = chr(10).join(hasil_beli["detail"])
-                            skor_note = "⚠️ Skor belum cukup untuk sinyal beli kuat." if hasil_beli["skor"] < 4 else ""
-                            kirim_pesan(f"""📊 <b>Hasil Scan: {ticker}</b>
-━━━━━━━━━━━━━━━━━━
-💰 Harga  : Rp {hasil_beli["harga"]:,.0f}
-📊 Skor   : {hasil_beli["skor"]:.1f}/5
-📈 RSI    : {hasil_beli["rsi"]:.1f}
-
-<b>Detail:</b>
-{detail_str}
-
-{skor_note}""".strip())
-                    else:
-                        kirim_pesan(f"❌ Data <b>{ticker}</b> tidak ditemukan.\nPastikan kode saham benar.")
-                    if harga_beli:
-                        tp = analisis_takeprofit(ticker, harga_beli)
-                        if tp and tp["skor_jual"] >= 1:
-                            kirim_pesan(fmt_takeprofit(tp))
-
-                        cl = analisis_cutloss(ticker, harga_beli)
-                        if cl and cl["pintu_terbuka"] >= 1:
-                            kirim_pesan(fmt_cutloss(cl))
-                        elif cl:
-                            pnl_val = cl["pnl_pct"]
-                            kirim_pesan(f"✅ <b>{ticker}</b> aman. P&L: {pnl_val:+.1f}% | Tidak ada sinyal cut loss.")
-
-            elif text == '/help':
-                kirim_pesan("""📖 <b>Panduan Bot v3.0</b>
-
-/tambah BBCA 6995 — Tambah ke portofolio
-/hapus BBCA — Hapus dari portofolio
-/portofolio — Lihat posisi + P&L realtime
-/sektor — Kondisi sektor hari ini
-/scan — Scan manual
-/reload — Refresh daftar saham dari CSV
-/start — Info bot
-
-<b>Sinyal otomatis:</b>
-🔥 Scan sektor hot tiap pagi
-🟢 Beli (skor 4–5/5)
-💰 Take Profit bertingkat
-⚠️ Warning / 🔴 Cut Loss / 🆘 Darurat
-
-⚠️ <i>Hanya sinyal teknikal. DYOR!</i>""".strip())
-
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(wl, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, primary)
+        shutil.copy2(primary, backup)
+        logger.info(f"Watchlist saved: {len(wl)} items")
     except Exception as e:
-        logger.error(f"Error cek perintah: {e}")
+        logger.error(f"Save gagal: {e}")
+        raise
 
-# ============================================================
-# SCHEDULER
-# ============================================================
-def setup_jadwal():
-    for hari in ['monday','tuesday','wednesday','thursday','friday']:
-        getattr(schedule.every(), hari).at("07:00").do(scan_pagi)
-        getattr(schedule.every(), hari).at("12:00").do(scan_siang)
-        getattr(schedule.every(), hari).at("15:45").do(scan_sore)
-    logger.info("Jadwal OK!")
+def get_storage_info() -> dict:
+    """Untuk command /status."""
+    data_dir   = _get_data_dir()
+    primary    = _data_path("watchlist.json")
+    backup     = _data_path("watchlist.json.bak")
+    is_volume  = os.path.isdir(_VOLUME_DIR)
+    mtime_str  = "–"
+    if os.path.exists(primary):
+        import datetime as dt
+        mtime_str = dt.datetime.fromtimestamp(
+            os.path.getmtime(primary), WIB
+        ).strftime("%d %b %Y %H:%M WIB")
+    return {
+        "mode":        "Railway Volume 💾" if is_volume else "Local Storage 📁",
+        "path":        data_dir,
+        "has_primary": os.path.exists(primary),
+        "has_backup":  os.path.exists(backup),
+        "last_saved":  mtime_str,
+        "size":        os.path.getsize(primary) if os.path.exists(primary) else 0,
+    }
 
-# ============================================================
-# MAIN
-# ============================================================
+# ── Yahoo Finance helpers ────────────────────────────────────────────────
+def ticker_id(kode: str) -> str:
+    """ANTM → ANTM.JK"""
+    kode = kode.upper().strip()
+    return kode if kode.endswith(".JK") else kode + ".JK"
+
+def get_price_data(kode: str) -> dict | None:
+    """Ambil harga + indikator teknikal dari Yahoo Finance."""
+    try:
+        tk = yf.Ticker(ticker_id(kode))
+
+        # Historis 6 bulan untuk hitung indikator
+        hist = tk.history(period="6mo", interval="1d")
+        if hist.empty:
+            return None
+
+        close = hist["Close"]
+        volume = hist["Volume"]
+
+        # ── Harga terkini
+        current  = float(close.iloc[-1])
+        prev     = float(close.iloc[-2])
+        chg_pct  = ((current - prev) / prev) * 100
+
+        # ── RSI (14)
+        delta = close.diff()
+        gain  = delta.clip(lower=0).rolling(14).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14).mean()
+        rs    = gain / loss
+        rsi   = float(100 - (100 / (1 + rs.iloc[-1])))
+
+        # ── MACD (12,26,9)
+        ema12  = close.ewm(span=12).mean()
+        ema26  = close.ewm(span=26).mean()
+        macd_line        = ema12 - ema26
+        signal_line      = macd_line.ewm(span=9).mean()
+        macd_hist        = float(macd_line.iloc[-1] - signal_line.iloc[-1])
+        macd_hist_prev   = float(macd_line.iloc[-2] - signal_line.iloc[-2])
+        macd_val         = float(macd_line.iloc[-1])
+        signal_val       = float(signal_line.iloc[-1])
+        # Golden cross = histogram baru saja balik positif dari negatif
+        macd_golden_cross = macd_hist > 0 and macd_hist_prev <= 0
+
+        # ── MA 20 & 50
+        ma20 = float(close.rolling(20).mean().iloc[-1])
+        ma50 = float(close.rolling(50).mean().iloc[-1])
+
+        # ── Support & Resistance (20-hari low/high)
+        support    = float(close.rolling(20).min().iloc[-1])
+        resistance = float(close.rolling(20).max().iloc[-1])
+
+        # ── Volume spike (vol hari ini vs rata2 10 hari)
+        avg_vol    = float(volume.rolling(10).mean().iloc[-1])
+        today_vol  = float(volume.iloc[-1])
+        vol_ratio  = today_vol / avg_vol if avg_vol > 0 else 1.0
+
+        # ── Bollinger Bands (20, 2)
+        bb_mid   = close.rolling(20).mean()
+        bb_std   = close.rolling(20).std()
+        bb_upper = float((bb_mid + 2 * bb_std).iloc[-1])
+        bb_lower = float((bb_mid - 2 * bb_std).iloc[-1])
+        bb_mid_v = float(bb_mid.iloc[-1])
+        bb_width = (bb_upper - bb_lower) / bb_mid_v   # bandwidth relatif
+        # Posisi harga dalam BB (0=lower, 1=upper)
+        bb_pct   = (current - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
+        # Squeeze: bandwidth < 10% dari harga = volatilitas rendah, potensi breakout
+        bb_squeeze = bb_width < 0.10
+
+        # ── Candlestick Pattern Detection (5 hari terakhir)
+        op   = hist["Open"]
+        hi   = hist["High"]
+        lo   = hist["Low"]
+        cl2  = hist["Close"]
+
+        def body(i):   return abs(float(cl2.iloc[i]) - float(op.iloc[i]))
+        def candle(i): return float(hi.iloc[i]) - float(lo.iloc[i])
+        def is_bull(i):return float(cl2.iloc[i]) > float(op.iloc[i])
+        def is_bear(i):return float(cl2.iloc[i]) < float(op.iloc[i])
+
+        patterns = []
+
+        # --- Doji (body sangat kecil < 10% dari total candle)
+        if candle(-1) > 0 and body(-1) / candle(-1) < 0.10:
+            patterns.append(("DOJI", "neutral", "Ketidakpastian — tunggu konfirmasi arah ⚖️"))
+
+        # --- Hammer / Inverted Hammer (bullish reversal)
+        if candle(-1) > 0:
+            lower_shadow = float(op.iloc[-1] if is_bull(-1) else cl2.iloc[-1]) - float(lo.iloc[-1])
+            upper_shadow = float(hi.iloc[-1]) - float(cl2.iloc[-1] if is_bull(-1) else op.iloc[-1])
+            _body        = body(-1)
+            # Hammer: lower shadow panjang (>2x body), upper shadow kecil
+            if lower_shadow > 2 * _body and upper_shadow < _body and _body > 0:
+                patterns.append(("HAMMER", "bullish", "Hammer — sinyal reversal bullish 🔨"))
+            # Shooting Star: upper shadow panjang, lower shadow kecil (bearish)
+            if upper_shadow > 2 * _body and lower_shadow < _body and _body > 0:
+                patterns.append(("SHOOTING STAR", "bearish", "Shooting Star — potensi reversal turun ⭐"))
+
+        # --- Bullish Engulfing (hari ini bull, kemarin bear, body hari ini > kemarin)
+        if len(cl2) >= 2:
+            if is_bear(-2) and is_bull(-1) and body(-1) > body(-2):
+                if float(cl2.iloc[-1]) > float(op.iloc[-2]) and float(op.iloc[-1]) < float(cl2.iloc[-2]):
+                    patterns.append(("BULLISH ENGULFING", "bullish", "Bullish Engulfing — sinyal beli kuat 🟢"))
+
+        # --- Bearish Engulfing
+        if len(cl2) >= 2:
+            if is_bull(-2) and is_bear(-1) and body(-1) > body(-2):
+                if float(cl2.iloc[-1]) < float(op.iloc[-2]) and float(op.iloc[-1]) > float(cl2.iloc[-2]):
+                    patterns.append(("BEARISH ENGULFING", "bearish", "Bearish Engulfing — sinyal jual kuat 🔴"))
+
+        # --- Morning Star (3 candle: bear besar, doji/kecil, bull besar)
+        if len(cl2) >= 3:
+            big_bear  = is_bear(-3) and body(-3) > candle(-3) * 0.6
+            small_mid = body(-2) < candle(-2) * 0.3
+            big_bull  = is_bull(-1) and body(-1) > candle(-1) * 0.6
+            if big_bear and small_mid and big_bull:
+                patterns.append(("MORNING STAR", "bullish", "Morning Star — reversal bullish kuat ⭐🌅"))
+
+        # --- Evening Star (kebalikan Morning Star, bearish)
+        if len(cl2) >= 3:
+            big_bull2  = is_bull(-3) and body(-3) > candle(-3) * 0.6
+            small_mid2 = body(-2) < candle(-2) * 0.3
+            big_bear2  = is_bear(-1) and body(-1) > candle(-1) * 0.6
+            if big_bull2 and small_mid2 and big_bear2:
+                patterns.append(("EVENING STAR", "bearish", "Evening Star — reversal bearish 🌆"))
+
+        # --- Three White Soldiers (3 candle bull berturut naik)
+        if len(cl2) >= 3:
+            if all(is_bull(-i) for i in [1,2,3]):
+                if float(cl2.iloc[-1]) > float(cl2.iloc[-2]) > float(cl2.iloc[-3]):
+                    patterns.append(("THREE WHITE SOLDIERS", "bullish", "3 White Soldiers — tren naik kuat 💪"))
+
+        # --- Three Black Crows (3 candle bear berturut turun)
+        if len(cl2) >= 3:
+            if all(is_bear(-i) for i in [1,2,3]):
+                if float(cl2.iloc[-1]) < float(cl2.iloc[-2]) < float(cl2.iloc[-3]):
+                    patterns.append(("THREE BLACK CROWS", "bearish", "3 Black Crows — tren turun kuat 🐦‍⬛"))
+
+        # Ringkasan sinyal candlestick
+        candle_bull = sum(1 for p in patterns if p[1] == "bullish")
+        candle_bear = sum(1 for p in patterns if p[1] == "bearish")
+        candle_bias = "bullish" if candle_bull > candle_bear else ("bearish" if candle_bear > candle_bull else "neutral")
+
+        # ── Fundamental
+        info = tk.info
+        pbv  = info.get("priceToBook")
+        per  = info.get("trailingPE")
+        name = info.get("longName") or info.get("shortName") or kode
+
+        return {
+            "kode":             kode.upper(),
+            "name":             name,
+            "current":          current,
+            "prev":             prev,
+            "chg_pct":          chg_pct,
+            "rsi":              rsi,
+            "macd":             macd_val,
+            "signal":           signal_val,
+            "macd_hist":        macd_hist,
+            "macd_hist_prev":   macd_hist_prev,
+            "macd_golden_cross":macd_golden_cross,
+            "ma20":             ma20,
+            "ma50":             ma50,
+            "support":          support,
+            "resistance":       resistance,
+            "vol_ratio":        vol_ratio,
+            "bb_upper":         bb_upper,
+            "bb_lower":         bb_lower,
+            "bb_mid":           bb_mid_v,
+            "bb_pct":           bb_pct,
+            "bb_width":         bb_width,
+            "bb_squeeze":       bb_squeeze,
+            "patterns":         patterns,
+            "candle_bias":      candle_bias,
+            "pbv":              pbv,
+            "per":              per,
+            # Raw OHLCV untuk chart — 60 hari terakhir
+            "hist":             hist.tail(60),
+        }
+    except Exception as e:
+        logger.error(f"Error fetching {kode}: {e}")
+        return None
+
+def analyze(d: dict, entry: float, cl_pct: float, tp_pct: float) -> dict:
+    """
+    Hitung sinyal BUY/SELL dengan logika ketat:
+
+    STRONG BUY  → semua 4 kondisi inti terpenuhi + fundamental OK
+    BUY         → minimal 4 dari 6 kondisi terpenuhi (termasuk min 2 teknikal inti)
+    NEUTRAL     → sinyal campuran, belum cukup konfirmasi
+    SELL        → teknikal lemah
+    STRONG SELL → teknikal sangat lemah atau fundamental buruk
+
+    OVERRIDE ke SELL jika perusahaan rugi (per negatif & pbv tinggi)
+    OVERRIDE ke bawah jika harga sudah naik >50% dalam sebulan (terlambat masuk)
+    """
+    price     = d["current"]
+    rsi       = d["rsi"]
+    mh        = d["macd_hist"]
+    gc        = d["macd_golden_cross"]   # MACD baru balik positif
+    support   = d["support"]
+    resist    = d["resistance"]
+    ma20      = d["ma20"]
+    vol_ratio = d["vol_ratio"]
+    pbv       = d["pbv"]
+    per       = d["per"]
+    chg_pct   = d["chg_pct"]
+    bb_upper  = d["bb_upper"]
+    bb_lower  = d["bb_lower"]
+    bb_mid    = d["bb_mid"]
+    bb_pct    = d["bb_pct"]
+    bb_squeeze= d["bb_squeeze"]
+    patterns  = d["patterns"]
+    candle_bias = d["candle_bias"]
+
+    # ── CL & TP level (teknikal prioritas, % sebagai backup)
+    cl_tech      = support * 0.99
+    tp_tech      = resist
+    cl_pct_level = entry * (1 + cl_pct / 100)
+    tp_pct_level = entry * (1 + tp_pct / 100)
+    cl_final     = max(cl_tech, cl_pct_level)
+    tp_final     = min(tp_tech, tp_pct_level)
+
+    # ── Evaluasi 6 kondisi sinyal ────────────────────────────────────────
+    signals      = []   # deskripsi sinyal untuk ditampilkan
+    conditions   = []   # True/False per kondisi
+    tech_met     = 0    # counter kondisi teknikal inti
+
+    # 1. RSI — wajib < 50 untuk BUY, bonus jika oversold
+    if rsi < 30:
+        signals.append(f"RSI oversold {rsi:.1f} — potensi reversal kuat 🟢")
+        conditions.append(True)
+        tech_met += 1
+    elif rsi < 50:
+        signals.append(f"RSI {rsi:.1f} — momentum belum overbought 🟢")
+        conditions.append(True)
+        tech_met += 1
+    elif rsi > 70:
+        signals.append(f"RSI overbought {rsi:.1f} — hati-hati koreksi 🔴")
+        conditions.append(False)
+    else:
+        signals.append(f"RSI {rsi:.1f} — zona netral ⚖️")
+        conditions.append(False)
+
+    # 2. MACD — positif atau golden cross
+    if gc:
+        signals.append("MACD golden cross — baru balik bullish 🚀")
+        conditions.append(True)
+        tech_met += 1
+    elif mh > 0:
+        signals.append(f"MACD histogram positif ({mh:+.2f}) 🟢")
+        conditions.append(True)
+        tech_met += 1
+    else:
+        signals.append(f"MACD histogram negatif ({mh:+.2f}) 🔴")
+        conditions.append(False)
+
+    # 3. MA20 trend
+    if price > ma20:
+        signals.append(f"Harga di atas MA20 ({fmt(ma20)}) 🟢")
+        conditions.append(True)
+        tech_met += 1
+    else:
+        gap_pct = ((ma20 - price) / ma20) * 100
+        signals.append(f"Harga di bawah MA20 — gap {gap_pct:.1f}% 🔴")
+        conditions.append(False)
+
+    # 4. Harga di atas support (tidak sedang breakdown)
+    if price > support:
+        signals.append(f"Di atas support Rp {fmt(support)} 🟢")
+        conditions.append(True)
+    else:
+        signals.append(f"Di bawah support Rp {fmt(support)} — waspada 🔴")
+        conditions.append(False)
+
+    # 5. Volume spike konfirmasi
+    if vol_ratio >= 1.5:
+        signals.append(f"Volume spike {vol_ratio:.1f}x — ada minat beli 🔥")
+        conditions.append(True)
+    elif vol_ratio < 0.5:
+        signals.append(f"Volume sangat sepi {vol_ratio:.1f}x — sinyal lemah 😴")
+        conditions.append(False)
+    else:
+        signals.append(f"Volume normal {vol_ratio:.1f}x ⚖️")
+        conditions.append(False)
+
+    # 6. Bollinger Bands
+    if bb_squeeze:
+        signals.append(f"BB Squeeze — volatilitas rendah, potensi breakout ⚡")
+        conditions.append(True)   # squeeze = peluang, dihitung kondisi
+    elif bb_pct < 0.20:
+        signals.append(f"Harga dekat Lower BB ({fmt(bb_lower)}) — potensi rebound 🟢")
+        conditions.append(True)
+    elif bb_pct > 0.90:
+        signals.append(f"Harga dekat Upper BB ({fmt(bb_upper)}) — hati-hati overbought 🔴")
+        conditions.append(False)
+    else:
+        pct_show = int(bb_pct * 100)
+        signals.append(f"BB normal — posisi {pct_show}% dalam band ⚖️")
+        conditions.append(False)
+
+    # 7. Candlestick pattern
+    if patterns:
+        bull_patterns = [p for p in patterns if p[1] == "bullish"]
+        bear_patterns = [p for p in patterns if p[1] == "bearish"]
+        for p in patterns:
+            signals.append(f"Candle: {p[2]}")
+        if candle_bias == "bullish":
+            conditions.append(True)
+        elif candle_bias == "bearish":
+            conditions.append(False)
+        else:
+            conditions.append(False)
+    else:
+        signals.append("Tidak ada pola candlestick signifikan ⚖️")
+        conditions.append(False)
+
+    # 6. Fundamental — PBV < 2x dan PER tidak ekstrem
+    fund_ok = False
+    if pbv is not None and per is not None:
+        if pbv < 2.0 and 0 < per < 25:
+            signals.append(f"Fundamental menarik: PBV {pbv:.2f}x, PER {per:.1f}x 🟢")
+            conditions.append(True)
+            fund_ok = True
+        elif pbv > 4.0 or (per is not None and per > 40):
+            signals.append(f"Valuasi mahal: PBV {pbv:.2f}x, PER {per:.1f}x 🔴")
+            conditions.append(False)
+        else:
+            signals.append(f"Fundamental netral: PBV {pbv:.2f}x, PER {per:.1f}x ⚖️")
+            conditions.append(False)
+    elif pbv is not None:
+        if pbv < 1.0:
+            signals.append(f"PBV sangat murah {pbv:.2f}x 🟢")
+            conditions.append(True)
+            fund_ok = True
+        else:
+            signals.append(f"PBV {pbv:.2f}x ⚖️")
+            conditions.append(False)
+    else:
+        signals.append("Data fundamental tidak tersedia ⚖️")
+        conditions.append(False)
+
+    # ── Hitung berapa kondisi terpenuhi ──────────────────────────────────
+    met = sum(conditions)
+
+    # ── Override: perusahaan rugi (PER negatif) ──────────────────────────
+    rugi = (per is not None and per < 0)
+    if rugi:
+        signals.append("⛔ Perusahaan RUGI — override ke Sell")
+
+    # ── Override: sudah naik terlalu kencang (>50% sebulan) ─────────────
+    terlambat = price > resist * 1.10
+    if terlambat:
+        signals.append("⚠️ Harga sudah jauh di atas resistance — terlambat masuk")
+
+    # ── Tentukan verdict (dari 8 kondisi total) ───────────────────────────
+    # STRONG BUY: 6+ kondisi + min 2 teknikal inti + fundamental OK
+    # BUY:        5+ kondisi + min 2 teknikal inti
+    # NEUTRAL:    3–4 kondisi
+    # SELL:       < 3 kondisi
+    # STRONG SELL:< 2 kondisi atau override rugi
+
+    if rugi or terlambat:
+        if met <= 2 or rugi:
+            verdict = "STRONG SELL ⚠️"
+        else:
+            verdict = "SELL 📉"
+    elif met >= 6 and tech_met >= 2 and fund_ok:
+        verdict = "STRONG BUY 🚀"
+    elif met >= 5 and tech_met >= 2:
+        verdict = "BUY 📈"
+    elif met >= 3:
+        verdict = "NEUTRAL ⚖️"
+    elif met >= 2:
+        verdict = "SELL 📉"
+    else:
+        verdict = "STRONG SELL ⚠️"
+
+    # ── Alert CL / TP ─────────────────────────────────────────────────────
+    alert = None
+    if price <= cl_final:
+        alert = "CUT_LOSS"
+    elif price >= tp_final:
+        alert = "TAKE_PROFIT"
+
+    # Profit/loss dari entry
+    pnl_pct = ((price - entry) / entry * 100) if entry > 0 else 0
+
+    return {
+        "score":        met,        # jumlah kondisi terpenuhi (0–6)
+        "tech_met":     tech_met,
+        "verdict":      verdict,
+        "signals":      signals,
+        "conditions":   conditions,
+        "cl":           cl_final,
+        "tp":           tp_final,
+        "cl_tech":      cl_tech,
+        "tp_tech":      tp_tech,
+        "pnl_pct":      pnl_pct,
+        "alert":        alert,
+        "rugi":         rugi,
+        "terlambat":    terlambat,
+        "fund_ok":      fund_ok,
+    }
+
+# ── Format helpers ────────────────────────────────────────────────────────
+def fmt(n, dec=0):
+    if n is None: return "–"
+    return f"{n:,.{dec}f}"
+
+def pct_emoji(v):
+    if v > 2:   return "🟢"
+    if v > 0:   return "🔼"
+    if v < -2:  return "🔴"
+    return "🔽"
+
+def build_card(d: dict, ana: dict, entry: float) -> str:
+    chg       = d["chg_pct"]
+    pnl       = ana["pnl_pct"]
+    pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+    score     = ana["score"]
+    tech_met  = ana["tech_met"]
+
+    alert_line = ""
+    if ana["alert"] == "CUT_LOSS":
+        alert_line = "\n\n🚨 *ALERT: HARGA MENYENTUH CUT LOSS!*\nSegera evaluasi posisi kamu."
+    elif ana["alert"] == "TAKE_PROFIT":
+        alert_line = "\n\n🎯 *ALERT: TARGET TAKE PROFIT TERCAPAI!*\nPertimbangkan untuk realisasi profit."
+
+    # Pisahkan sinyal berdasarkan kategori
+    rsi_sig   = next((s for s in ana["signals"] if "RSI" in s), "")
+    macd_sig  = next((s for s in ana["signals"] if "MACD" in s), "")
+    ma_sig    = next((s for s in ana["signals"] if "MA20" in s or "MA" in s and "MACD" not in s), "")
+    sup_sig   = next((s for s in ana["signals"] if "support" in s.lower()), "")
+    vol_sig   = next((s for s in ana["signals"] if "Volume" in s or "volume" in s), "")
+    bb_sig    = next((s for s in ana["signals"] if "BB" in s), "")
+    candle_sigs = [s for s in ana["signals"] if "Candle:" in s]
+    fund_sig  = next((s for s in ana["signals"] if "Fundamental" in s or "PBV" in s or "Valuasi" in s or "murah" in s.lower()), "")
+    override_sigs = [s for s in ana["signals"] if "RUGI" in s or "terlambat" in s.lower() or "⛔" in s or "⚠️" in s]
+
+    pbv_txt = f"{d['pbv']:.2f}x" if d['pbv'] else "–"
+    per_txt = f"{d['per']:.1f}x" if d['per'] else "–"
+
+    # BB position bar visual
+    bb_pos = int(d["bb_pct"] * 10)
+    bb_pos = max(0, min(10, bb_pos))
+    bb_bar = "░" * bb_pos + "▓" + "░" * (10 - bb_pos)
+    bb_squeeze_tag = " ⚡SQUEEZE" if d["bb_squeeze"] else ""
+
+    # Candlestick section
+    if candle_sigs:
+        candle_txt = "\n".join(f"  {s.replace('Candle: ','')}" for s in candle_sigs)
+    else:
+        candle_txt = "  Tidak ada pola signifikan"
+
+    # Progress bar kondisi (dari 8)
+    filled = "█" * score
+    empty  = "░" * (8 - score)
+    bar    = f"{filled}{empty} {score}/8"
+
+    # Alasan verdict
+    v = ana["verdict"]
+    if "STRONG BUY" in v:
+        reason = f"6+ kondisi ✅ · {tech_met} teknikal inti · fundamental ✅"
+    elif "BUY" in v:
+        reason = f"5+ kondisi ✅ · {tech_met} teknikal inti terpenuhi"
+    elif "NEUTRAL" in v:
+        reason = "Sinyal campuran — tunggu konfirmasi lebih lanjut"
+    elif "STRONG SELL" in v:
+        reason = "Terlalu sedikit kondisi terpenuhi" + (" · Perusahaan RUGI" if ana.get("rugi") else "")
+    else:
+        reason = "Kurang dari 3 kondisi terpenuhi"
+    if ana.get("terlambat"):
+        reason += " · Harga terlalu jauh dari resistance"
+
+    override_txt = ("\n" + "\n".join(f"  {s}" for s in override_sigs)) if override_sigs else ""
+
+    return (
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 *{d['kode']}* — {d['name'][:28]}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Harga: *Rp {fmt(d['current'])}* {pct_emoji(chg)} {chg:+.2f}%\n"
+        f"📥 Entry: Rp {fmt(entry)} | {pnl_emoji} P/L: *{pnl:+.1f}%*\n\n"
+        f"📊 *Teknikal:*\n"
+        f"  {rsi_sig}\n"
+        f"  {macd_sig}\n"
+        f"  {ma_sig}\n"
+        f"  {sup_sig}\n"
+        f"  {vol_sig}\n\n"
+        f"📉 *Bollinger Bands:*\n"
+        f"  Upper: {fmt(d['bb_upper'])} | Mid: {fmt(d['bb_mid'])} | Lower: {fmt(d['bb_lower'])}\n"
+        f"  Posisi: `[{bb_bar}]`{bb_squeeze_tag}\n"
+        f"  {bb_sig}\n\n"
+        f"🕯 *Candlestick Pattern:*\n"
+        f"{candle_txt}\n\n"
+        f"💹 *Fundamental:*\n"
+        f"  PBV: {pbv_txt} | PER: {per_txt}\n"
+        f"  {fund_sig}\n\n"
+        f"🎯 *Level:*\n"
+        f"  TP: Rp {fmt(ana['tp'])} _(teknikal: {fmt(ana['tp_tech'])})_\n"
+        f"  CL: Rp {fmt(ana['cl'])} _(teknikal: {fmt(ana['cl_tech'])})_\n"
+        f"{override_txt}\n"
+        f"📶 `{bar}` kondisi terpenuhi\n"
+        f"🏆 *Verdict: {ana['verdict']}*\n"
+        f"_{reason}_"
+        f"{alert_line}"
+    )
+
+# ── Chart Generator ───────────────────────────────────────────────────────
+def generate_chart(d: dict, ana: dict, entry: float) -> bytes:
+    """
+    Generate chart 3-panel:
+    1. Candlestick + BB + MA20 + MA50 + level CL/TP
+    2. Volume bar
+    3. RSI + MACD histogram
+    Return PNG bytes untuk dikirim ke Telegram.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib.gridspec import GridSpec
+    import matplotlib.dates as mdates
+    from io import BytesIO
+
+    hist = d["hist"].copy()
+    hist.index = pd.to_datetime(hist.index)
+    if hasattr(hist.index, 'tz') and hist.index.tz is not None:
+        hist.index = hist.index.tz_localize(None)
+
+    close  = hist["Close"]
+    open_  = hist["Open"]
+    high   = hist["High"]
+    low    = hist["Low"]
+    volume = hist["Volume"]
+    dates  = hist.index
+
+    # ── Hitung indikator untuk chart ───────────────────────────────────
+    ma20_s   = close.rolling(20).mean()
+    ma50_s   = close.rolling(50).mean()
+    bb_mid_s = close.rolling(20).mean()
+    bb_std_s = close.rolling(20).std()
+    bb_up_s  = bb_mid_s + 2 * bb_std_s
+    bb_lo_s  = bb_mid_s - 2 * bb_std_s
+
+    ema12    = close.ewm(span=12).mean()
+    ema26    = close.ewm(span=26).mean()
+    ml       = ema12 - ema26
+    sl       = ml.ewm(span=9).mean()
+    mh_s     = ml - sl
+
+    delta    = close.diff()
+    gain     = delta.clip(lower=0).rolling(14).mean()
+    loss     = (-delta.clip(upper=0)).rolling(14).mean()
+    rs       = gain / loss
+    rsi_s    = 100 - (100 / (1 + rs))
+
+    # ── Style ────────────────────────────────────────────────────────────
+    BG      = "#0f1520"
+    SURFACE = "#151e2e"
+    GREEN   = "#00e5a0"
+    RED     = "#ff4560"
+    BLUE    = "#0099ff"
+    YELLOW  = "#ffa500"
+    MUTED   = "#5a7090"
+    TEXT    = "#e2eaf5"
+
+    fig = plt.figure(figsize=(12, 9), facecolor=BG)
+    gs  = GridSpec(4, 1, figure=fig,
+                   height_ratios=[4, 1.2, 1, 1],
+                   hspace=0.06)
+
+    ax1 = fig.add_subplot(gs[0])  # Candlestick
+    ax2 = fig.add_subplot(gs[1], sharex=ax1)  # Volume
+    ax3 = fig.add_subplot(gs[2], sharex=ax1)  # RSI
+    ax4 = fig.add_subplot(gs[3], sharex=ax1)  # MACD
+
+    for ax in [ax1, ax2, ax3, ax4]:
+        ax.set_facecolor(SURFACE)
+        ax.tick_params(colors=MUTED, labelsize=7)
+        ax.yaxis.label.set_color(MUTED)
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#1e2d42")
+
+    # ── Panel 1: Candlestick ─────────────────────────────────────────────
+    n = len(dates)
+    xs = range(n)
+    w  = 0.4
+
+    for i, (o, h, l, c) in enumerate(zip(open_, high, low, close)):
+        color = GREEN if c >= o else RED
+        # Body
+        ax1.bar(i, abs(c - o), bottom=min(c, o), color=color, width=w*1.8, alpha=0.9, zorder=3)
+        # Wick
+        ax1.plot([i, i], [l, h], color=color, linewidth=0.8, zorder=2)
+
+    # BB
+    ax1.fill_between(xs, bb_lo_s, bb_up_s, alpha=0.08, color=BLUE, zorder=1)
+    ax1.plot(xs, bb_up_s, color=BLUE, linewidth=0.7, alpha=0.5, linestyle="--", label="BB Upper")
+    ax1.plot(xs, bb_lo_s, color=BLUE, linewidth=0.7, alpha=0.5, linestyle="--", label="BB Lower")
+    ax1.plot(xs, bb_mid_s, color=BLUE, linewidth=0.5, alpha=0.3)
+
+    # MA
+    ax1.plot(xs, ma20_s, color=YELLOW, linewidth=1.0, label="MA20", zorder=4)
+    ax1.plot(xs, ma50_s, color="#ff6b9d", linewidth=1.0, label="MA50", zorder=4)
+
+    # CL / TP / Entry lines
+    ax1.axhline(ana["cl"],    color=RED,   linewidth=1.2, linestyle="--", alpha=0.8, zorder=5)
+    ax1.axhline(ana["tp"],    color=GREEN, linewidth=1.2, linestyle="--", alpha=0.8, zorder=5)
+    ax1.axhline(entry,        color=YELLOW, linewidth=0.9, linestyle=":", alpha=0.7, zorder=5)
+    ax1.axhline(d["current"], color=TEXT,  linewidth=0.7, linestyle=":", alpha=0.4)
+
+    # Labels CL/TP
+    ax1.text(n - 0.5, ana["cl"],  f" CL {ana['cl']:,.0f}", color=RED,   fontsize=7, va="center")
+    ax1.text(n - 0.5, ana["tp"],  f" TP {ana['tp']:,.0f}", color=GREEN, fontsize=7, va="center")
+    ax1.text(n - 0.5, entry,      f" Entry {entry:,.0f}", color=YELLOW, fontsize=7, va="center")
+
+    # Pattern markers
+    for pat in d["patterns"]:
+        ptype = pat[1]
+        pname = pat[0]
+        color = GREEN if ptype == "bullish" else (RED if ptype == "bearish" else YELLOW)
+        marker = "^" if ptype == "bullish" else ("v" if ptype == "bearish" else "D")
+        ypos   = float(low.iloc[-1]) * 0.995 if ptype != "bearish" else float(high.iloc[-1]) * 1.005
+        ax1.scatter(n - 1, ypos, color=color, marker=marker, s=80, zorder=6)
+        ax1.annotate(pname, (n - 1, ypos), textcoords="offset points",
+                     xytext=(0, -12 if ptype == "bearish" else 8),
+                     fontsize=6, color=color, ha="center")
+
+    verdict_color = GREEN if "BUY" in d.get("verdict", "") else (RED if "SELL" in d.get("verdict", "") else YELLOW)
+    ax1.set_title(
+        f"{d['kode']} — {d['name'][:35]}   |   "
+        f"Rp {d['current']:,.0f}  {d['chg_pct']:+.2f}%   |   "
+        f"RSI {d['rsi']:.1f}   |   {ana['verdict']}",
+        color=TEXT, fontsize=9, pad=8, loc="left"
+    )
+    ax1.legend(fontsize=6, facecolor=BG, edgecolor=MUTED, labelcolor=MUTED, loc="upper left")
+    ax1.set_ylabel("Harga (IDR)", color=MUTED, fontsize=7)
+
+    # ── Panel 2: Volume ──────────────────────────────────────────────────
+    avg_vol = volume.rolling(10).mean()
+    vol_colors = [GREEN if c >= o else RED for c, o in zip(close, open_)]
+    ax2.bar(xs, volume / 1e6, color=vol_colors, alpha=0.7, width=0.8)
+    ax2.plot(xs, avg_vol / 1e6, color=YELLOW, linewidth=0.8, label="Vol MA10")
+    ax2.set_ylabel("Vol (M)", color=MUTED, fontsize=7)
+    ax2.legend(fontsize=6, facecolor=BG, edgecolor=MUTED, labelcolor=MUTED, loc="upper left")
+
+    # ── Panel 3: RSI ─────────────────────────────────────────────────────
+    ax3.plot(xs, rsi_s, color=BLUE, linewidth=1.0)
+    ax3.axhline(70, color=RED,   linewidth=0.6, linestyle="--", alpha=0.6)
+    ax3.axhline(30, color=GREEN, linewidth=0.6, linestyle="--", alpha=0.6)
+    ax3.axhline(50, color=MUTED, linewidth=0.4, linestyle=":", alpha=0.4)
+    ax3.fill_between(xs, rsi_s, 70, where=(rsi_s >= 70), alpha=0.15, color=RED)
+    ax3.fill_between(xs, rsi_s, 30, where=(rsi_s <= 30), alpha=0.15, color=GREEN)
+    ax3.set_ylim(0, 100)
+    ax3.set_ylabel("RSI", color=MUTED, fontsize=7)
+    ax3.text(n - 1, float(rsi_s.iloc[-1]), f" {float(rsi_s.iloc[-1]):.1f}",
+             color=BLUE, fontsize=7, va="center")
+
+    # ── Panel 4: MACD Histogram ──────────────────────────────────────────
+    mh_colors = [GREEN if v >= 0 else RED for v in mh_s]
+    ax4.bar(xs, mh_s, color=mh_colors, alpha=0.8, width=0.8)
+    ax4.plot(xs, ml, color=BLUE,   linewidth=0.8, label="MACD")
+    ax4.plot(xs, sl, color=YELLOW, linewidth=0.8, label="Signal")
+    ax4.axhline(0, color=MUTED, linewidth=0.5, alpha=0.5)
+    ax4.set_ylabel("MACD", color=MUTED, fontsize=7)
+    ax4.legend(fontsize=6, facecolor=BG, edgecolor=MUTED, labelcolor=MUTED, loc="upper left")
+
+    # ── X axis — tanggal ─────────────────────────────────────────────────
+    tick_step = max(1, n // 8)
+    ax4.set_xticks(range(0, n, tick_step))
+    ax4.set_xticklabels(
+        [dates[i].strftime("%d/%m") for i in range(0, n, tick_step)],
+        color=MUTED, fontsize=7
+    )
+    plt.setp(ax1.get_xticklabels(), visible=False)
+    plt.setp(ax2.get_xticklabels(), visible=False)
+    plt.setp(ax3.get_xticklabels(), visible=False)
+
+    # Footer
+    now_str = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+    fig.text(0.99, 0.01, f"IDX Saham Bot · {now_str} · Data: Yahoo Finance",
+             ha="right", color=MUTED, fontsize=6)
+
+    plt.tight_layout()
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png", dpi=130, bbox_inches="tight",
+                facecolor=BG, edgecolor="none")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+# ── Auth helper ───────────────────────────────────────────────────────────
+def is_allowed(update: Update) -> bool:
+    if not ALLOWED_IDS:
+        return True
+    return update.effective_user.id in ALLOWED_IDS
+
+# ── Command Handlers ──────────────────────────────────────────────────────
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    await update.message.reply_text(
+        "👋 *Selamat datang di IDX Saham Bot!*\n\n"
+        "Perintah tersedia:\n"
+        "*/add KODE ENTRY* — tambah saham ke watchlist\n"
+        "  _contoh: /add ANTM 2900_\n"
+        "*/del KODE* — hapus saham\n"
+        "*/list* — lihat semua watchlist\n"
+        "*/cek KODE* — cek satu saham sekarang\n"
+        "*/setcl KODE %* — ubah % cut loss (default -7%)\n"
+        "  _contoh: /setcl ANTM -8_\n"
+        "*/settp KODE %* — ubah % take profit (default +15%)\n"
+        "  _contoh: /settp ANTM 20_\n"
+        "*/scan* — scan semua watchlist sekarang\n"
+        "*/status* — cek status bot & storage\n"
+        "*/help* — bantuan",
+        parse_mode="Markdown"
+    )
+
+async def cmd_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    args = ctx.args
+    if len(args) < 2:
+        await update.message.reply_text("❌ Format: /add KODE HARGA_ENTRY\nContoh: /add ANTM 2900")
+        return
+
+    kode  = args[0].upper().strip()
+    try:
+        entry = float(args[1].replace(",", ""))
+    except ValueError:
+        await update.message.reply_text("❌ Harga entry tidak valid.")
+        return
+
+    wl = load_watchlist()
+    wl[kode] = {
+        "entry":  entry,
+        "cl_pct": DEFAULT_CL_PCT,
+        "tp_pct": DEFAULT_TP_PCT,
+        "added":  datetime.now(WIB).strftime("%Y-%m-%d %H:%M"),
+    }
+    save_watchlist(wl)
+
+    await update.message.reply_text(
+        f"✅ *{kode}* ditambahkan!\n"
+        f"Entry: Rp {fmt(entry)}\n"
+        f"CL default: {DEFAULT_CL_PCT}% | TP default: +{DEFAULT_TP_PCT}%\n\n"
+        f"Gunakan /setcl dan /settp untuk ubah level.",
+        parse_mode="Markdown"
+    )
+
+async def cmd_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    if not ctx.args:
+        await update.message.reply_text("❌ Format: /del KODE")
+        return
+
+    kode = ctx.args[0].upper().strip()
+    wl   = load_watchlist()
+    if kode not in wl:
+        await update.message.reply_text(f"❌ *{kode}* tidak ada di watchlist.", parse_mode="Markdown")
+        return
+
+    del wl[kode]
+    save_watchlist(wl)
+    await update.message.reply_text(f"🗑 *{kode}* dihapus dari watchlist.", parse_mode="Markdown")
+
+async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    wl = load_watchlist()
+    if not wl:
+        await update.message.reply_text("📋 Watchlist kosong. Tambah dengan /add KODE ENTRY")
+        return
+
+    lines = ["📋 *Watchlist kamu:*\n"]
+    for kode, meta in wl.items():
+        lines.append(
+            f"• *{kode}* — Entry: Rp {fmt(meta['entry'])} | "
+            f"CL: {meta['cl_pct']}% | TP: +{meta['tp_pct']}%"
+        )
+    lines.append(f"\nTotal: {len(wl)} saham")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def cmd_cek(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    if not ctx.args:
+        await update.message.reply_text("❌ Format: /cek KODE\nContoh: /cek ANTM")
+        return
+
+    kode = ctx.args[0].upper().strip()
+    wl   = load_watchlist()
+    meta = wl.get(kode)
+
+    msg = await update.message.reply_text(f"⏳ Mengambil data {kode}...")
+
+    d = get_price_data(kode)
+    if not d:
+        await msg.edit_text(f"❌ Data untuk *{kode}* tidak ditemukan. Cek kode saham.", parse_mode="Markdown")
+        return
+
+    entry  = meta["entry"]  if meta else d["current"]
+    cl_pct = meta["cl_pct"] if meta else DEFAULT_CL_PCT
+    tp_pct = meta["tp_pct"] if meta else DEFAULT_TP_PCT
+
+    ana  = analyze(d, entry, cl_pct, tp_pct)
+    # Simpan verdict ke d untuk dipakai di chart title
+    d["verdict"] = ana["verdict"]
+    card = build_card(d, ana, entry)
+
+    note = "" if meta else "\n\n_💡 Saham belum di watchlist. /add untuk pantau otomatis._"
+    await msg.edit_text(card + note, parse_mode="Markdown")
+
+    # Kirim chart setelah teks
+    await update.message.reply_text("📊 Membuat chart...")
+    try:
+        chart_bytes = await asyncio.get_event_loop().run_in_executor(
+            None, generate_chart, d, ana, entry
+        )
+        from io import BytesIO
+        await update.message.reply_photo(
+            photo=BytesIO(chart_bytes),
+            caption=f"📈 *{kode}* — 60 hari terakhir\nCandlestick + BB + MA + RSI + MACD",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Chart error {kode}: {e}")
+        await update.message.reply_text("⚠️ Chart gagal dibuat. Data teks di atas tetap valid.")
+
+async def cmd_chart(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Kirim chart saja tanpa teks analisis lengkap."""
+    if not is_allowed(update): return
+    if not ctx.args:
+        await update.message.reply_text("❌ Format: /chart KODE\nContoh: /chart ANTM")
+        return
+
+    kode = ctx.args[0].upper().strip()
+    wl   = load_watchlist()
+    meta = wl.get(kode)
+
+    msg = await update.message.reply_text(f"📊 Membuat chart {kode}...")
+
+    d = get_price_data(kode)
+    if not d:
+        await msg.edit_text(f"❌ Data *{kode}* tidak ditemukan.", parse_mode="Markdown")
+        return
+
+    entry  = meta["entry"]  if meta else d["current"]
+    cl_pct = meta["cl_pct"] if meta else DEFAULT_CL_PCT
+    tp_pct = meta["tp_pct"] if meta else DEFAULT_TP_PCT
+
+    ana = analyze(d, entry, cl_pct, tp_pct)
+    d["verdict"] = ana["verdict"]
+
+    try:
+        chart_bytes = await asyncio.get_event_loop().run_in_executor(
+            None, generate_chart, d, ana, entry
+        )
+        from io import BytesIO
+        await msg.delete()
+        await update.message.reply_photo(
+            photo=BytesIO(chart_bytes),
+            caption=(
+                f"📈 *{kode}* — {d['name'][:30]}\n"
+                f"Rp {fmt(d['current'])}  {d['chg_pct']:+.2f}%  |  "
+                f"RSI {d['rsi']:.1f}  |  {ana['verdict']}\n"
+                f"TP: {fmt(ana['tp'])}  •  CL: {fmt(ana['cl'])}"
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Chart error {kode}: {e}")
+        await msg.edit_text("⚠️ Gagal membuat chart. Coba /cek untuk analisis teks.")
+
+async def cmd_setcl(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    if len(ctx.args) < 2:
+        await update.message.reply_text("❌ Format: /setcl KODE PERSEN\nContoh: /setcl ANTM -8")
+        return
+
+    kode = ctx.args[0].upper()
+    try:
+        val  = float(ctx.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ % tidak valid.")
+        return
+
+    if val > 0: val = -val   # pastikan negatif
+
+    wl = load_watchlist()
+    if kode not in wl:
+        await update.message.reply_text(f"❌ {kode} tidak ada di watchlist.")
+        return
+
+    wl[kode]["cl_pct"] = val
+    save_watchlist(wl)
+    await update.message.reply_text(f"✅ CL *{kode}* diset ke *{val}%*", parse_mode="Markdown")
+
+async def cmd_settp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    if len(ctx.args) < 2:
+        await update.message.reply_text("❌ Format: /settp KODE PERSEN\nContoh: /settp ANTM 20")
+        return
+
+    kode = ctx.args[0].upper()
+    try:
+        val  = float(ctx.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ % tidak valid.")
+        return
+
+    if val < 0: val = -val   # pastikan positif
+
+    wl = load_watchlist()
+    if kode not in wl:
+        await update.message.reply_text(f"❌ {kode} tidak ada di watchlist.")
+        return
+
+    wl[kode]["tp_pct"] = val
+    save_watchlist(wl)
+    await update.message.reply_text(f"✅ TP *{kode}* diset ke *+{val}%*", parse_mode="Markdown")
+
+async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    wl = load_watchlist()
+    if not wl:
+        await update.message.reply_text("📋 Watchlist kosong.")
+        return
+
+    msg = await update.message.reply_text(f"⏳ Scanning {len(wl)} saham...")
+    await do_scan(ctx.bot, update.effective_chat.id, wl, header="📡 *SCAN MANUAL*")
+    await msg.delete()
+
+async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Cek status storage & bot."""
+    if not is_allowed(update): return
+    info = get_storage_info()
+    wl   = load_watchlist()
+    now  = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+
+    lines = [
+        "⚙️ *STATUS BOT*\n",
+        f"🕐 Waktu: {now}",
+        f"💾 Storage: {info['mode']}",
+        f"📂 Path: `{info['path']}`",
+        f"📄 File utama: {'✅ Ada' if info['has_primary'] else '❌ Belum ada'}",
+        f"🔁 Backup: {'✅ Ada' if info['has_backup'] else '❌ Belum ada'}",
+        f"💿 Ukuran: {info['size']} bytes",
+        f"🕓 Terakhir disimpan: {info['last_saved']}",
+        f"\n📋 Watchlist: *{len(wl)} saham*",
+        f"⏰ Auto-scan: 09:00 & 15:00 WIB",
+        f"📉 Default CL: {DEFAULT_CL_PCT}% | TP: +{DEFAULT_TP_PCT}%",
+    ]
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    await cmd_start(update, ctx)
+
+# ── Scheduled scan ────────────────────────────────────────────────────────
+async def do_scan(bot, chat_id: int, wl: dict, header: str = ""):
+    now_str = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+    alerts  = []
+    results = []
+
+    for kode, meta in wl.items():
+        d = get_price_data(kode)
+        if not d:
+            continue
+        ana = analyze(d, meta["entry"], meta["cl_pct"], meta["tp_pct"])
+        results.append((d, ana, meta["entry"]))
+        if ana["alert"]:
+            alerts.append((kode, ana["alert"], d["current"], ana["cl"], ana["tp"]))
+
+    if not results:
+        await bot.send_message(chat_id, "⚠️ Gagal mengambil data. Coba lagi nanti.")
+        return
+
+    # Kirim header
+    hdr = f"{header}\n🕐 {now_str}\n{'━'*22}\n"
+    await bot.send_message(chat_id, hdr, parse_mode="Markdown")
+
+    # Kirim kartu per saham
+    for d, ana, entry in results:
+        card = build_card(d, ana, entry)
+        await bot.send_message(chat_id, card, parse_mode="Markdown")
+        await asyncio.sleep(0.3)
+
+    # Kirim ringkasan alert
+    if alerts:
+        alert_lines = ["🚨 *ALERT PENTING:*\n"]
+        for kode, atype, price, cl, tp in alerts:
+            if atype == "CUT_LOSS":
+                alert_lines.append(f"⛔ *{kode}* → Harga Rp {fmt(price)} ≤ CL Rp {fmt(cl)}\nSegera pertimbangkan *CUT LOSS!*")
+            else:
+                alert_lines.append(f"🎯 *{kode}* → Harga Rp {fmt(price)} ≥ TP Rp {fmt(tp)}\nTarget tercapai! Pertimbangkan *TAKE PROFIT!*")
+        await bot.send_message(chat_id, "\n\n".join(alert_lines), parse_mode="Markdown")
+
+async def scheduled_scan(app: Application):
+    """Dipanggil scheduler 2x sehari."""
+    wl = load_watchlist()
+    if not wl:
+        return
+
+    now  = datetime.now(WIB)
+    sess = "🌅 MARKET OPEN" if now.hour < 12 else "🌇 MARKET CLOSE"
+
+    # Kirim ke semua ALLOWED_IDS, atau lewati jika tidak dikonfigurasi
+    if ALLOWED_IDS:
+        for uid in ALLOWED_IDS:
+            try:
+                await do_scan(app.bot, uid, wl, header=f"📊 *{sess}*")
+            except Exception as e:
+                logger.error(f"Scheduled scan error for {uid}: {e}")
+    else:
+        logger.info("No ALLOWED_USER_IDS set — skipping scheduled scan")
+
+# ── Main ──────────────────────────────────────────────────────────────────
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Handlers
+    app.add_handler(CommandHandler("start",  cmd_start))
+    app.add_handler(CommandHandler("add",    cmd_add))
+    app.add_handler(CommandHandler("del",    cmd_del))
+    app.add_handler(CommandHandler("list",   cmd_list))
+    app.add_handler(CommandHandler("cek",    cmd_cek))
+    app.add_handler(CommandHandler("chart",  cmd_chart))
+    app.add_handler(CommandHandler("setcl",  cmd_setcl))
+    app.add_handler(CommandHandler("settp",  cmd_settp))
+    app.add_handler(CommandHandler("scan",   cmd_scan))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("help",   cmd_help))
+
+    # Scheduler — WIB 09:00 & 15:00
+    scheduler = AsyncIOScheduler(timezone=WIB)
+    scheduler.add_job(scheduled_scan, "cron", hour=9,  minute=0, args=[app])
+    scheduler.add_job(scheduled_scan, "cron", hour=15, minute=0, args=[app])
+    scheduler.start()
+
+    logger.info("Bot started. Scheduler running for 09:00 & 15:00 WIB.")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 if __name__ == "__main__":
-    logger.info("Bot IDX v3.0 starting...")
-    kirim_pesan("""🚀 <b>Bot Sinyal Saham IDX v3.0 Aktif!</b>
-
-✨ <b>Upgrade:</b>
-📂 695 saham dari CSV GitHub (no hardcode!)
-🔥 Dynamic scan sektor hot
-✅ Fix analisis cut loss & take profit
-
-⏰ <b>Jadwal (Senin–Jumat):</b>
-🌅 07.00 — Scan + scoring sektor
-📊 12.00 — Monitor portofolio
-🔔 15.45 — Closing alert
-
-Ketik /help untuk panduan lengkap 😊""".strip())
-
-    setup_jadwal()
-    logger.info("Bot berjalan!")
-
-    while True:
-        schedule.run_pending()
-        cek_perintah()
-        time.sleep(3)
+    main()
