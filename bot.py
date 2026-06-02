@@ -29,6 +29,8 @@ WIB         = pytz.timezone("Asia/Jakarta")
 DEFAULT_CL_PCT    = float(os.environ.get("DEFAULT_CL_PCT",  "-7"))
 DEFAULT_TP_PCT    = float(os.environ.get("DEFAULT_TP_PCT",  "15"))
 FINNHUB_API_KEY   = os.environ.get("FINNHUB_API_KEY", "")
+SECTORS_API_KEY   = os.environ.get("SECTORS_API_KEY", "")
+ITICK_API_KEY     = os.environ.get("ITICK_API_KEY", "")
 
 # ── Persistent Storage (Railway Volume) ──────────────────────────────────
 # Railway: tambahkan Volume di Settings → Volumes, mount path /data
@@ -104,15 +106,15 @@ def ticker_id(kode: str) -> str:
 
 def get_price_data(kode: str) -> dict | None:
     """
-    Ambil data saham dari multiple sumber:
-    1. Finnhub (primary — proper API, tidak diblokir cloud)
-    2. Stooq (fallback)
+    Ambil data saham IDX dari multiple sumber:
+    1. iTick (primary — full IDX, free tier, tidak diblokir cloud)
+    2. Stooq (fallback gratis)
     3. yfinance (last resort)
     """
     kode = kode.upper().strip()
 
     for source, func in [
-        ("Finnhub",  lambda: _fetch_from_finnhub(kode)),
+        ("iTick",    lambda: _fetch_from_itick(kode)),
         ("Stooq",    lambda: _fetch_from_stooq(kode)),
         ("yfinance", lambda: _fetch_from_yfinance(kode)),
     ]:
@@ -128,6 +130,164 @@ def get_price_data(kode: str) -> dict | None:
 
     logger.error(f"All sources failed for {kode}")
     return None
+
+
+def _fetch_from_itick(kode: str) -> dict | None:
+    """
+    Fetch dari iTick API — full IDX coverage, free tier.
+    Docs: https://itick.org
+    """
+    import requests, time
+
+    if not ITICK_API_KEY:
+        logger.warning("ITICK_API_KEY tidak diset")
+        return None
+
+    headers  = {"token": ITICK_API_KEY}
+    base     = "https://api.itick.org"
+
+    # ── Harga terkini
+    r = requests.get(
+        f"{base}/stock/quote",
+        params={"region": "ID", "code": kode},
+        headers=headers, timeout=10
+    )
+    r.raise_for_status()
+    q = r.json()
+    logger.info(f"iTick quote {kode}: code={q.get('code')} data={q.get('data',{})}")
+
+    if q.get("code") != 0 or not q.get("data"):
+        logger.warning(f"iTick: no quote data for {kode}")
+        return None
+
+    qd      = q["data"]
+    current = float(qd.get("c", 0) or qd.get("lp", 0) or 0)
+    prev    = float(qd.get("pc", 0) or qd.get("yc", 0) or current)
+    name    = qd.get("n", kode)
+
+    if current == 0:
+        return None
+
+    chg_pct = ((current - prev) / prev * 100) if prev > 0 else 0.0
+
+    # ── Data historis (180 hari)
+    now       = int(time.time())
+    from_ts   = now - (180 * 24 * 3600)
+
+    r2 = requests.get(
+        f"{base}/stock/kline",
+        params={"region": "ID", "code": kode, "kType": "1D",
+                "startTime": from_ts, "endTime": now},
+        headers=headers, timeout=15
+    )
+    r2.raise_for_status()
+    kline = r2.json()
+    logger.info(f"iTick kline {kode}: code={kline.get('code')} count={len(kline.get('data',[]))}")
+
+    if kline.get("code") != 0 or not kline.get("data"):
+        logger.warning(f"iTick: no kline data for {kode}")
+        return None
+
+    bars = kline["data"]
+    # Format iTick: [timestamp, open, high, low, close, volume]
+    try:
+        opens   = pd.Series([float(b[1]) for b in bars], dtype=float)
+        highs   = pd.Series([float(b[2]) for b in bars], dtype=float)
+        lows    = pd.Series([float(b[3]) for b in bars], dtype=float)
+        closes  = pd.Series([float(b[4]) for b in bars], dtype=float)
+        volumes = pd.Series([float(b[5]) for b in bars], dtype=float)
+        dates   = pd.to_datetime([int(b[0]) for b in bars], unit="ms")
+    except (IndexError, TypeError) as e:
+        logger.warning(f"iTick: error parsing kline data: {e}")
+        return None
+
+    hist_df = pd.DataFrame({
+        "Open": opens, "High": highs, "Low": lows,
+        "Close": closes, "Volume": volumes
+    }, index=dates).sort_index().dropna()
+
+    if len(hist_df) < 20:
+        logger.warning(f"iTick: not enough data ({len(hist_df)} rows)")
+        return None
+
+    logger.info(f"iTick: {kode} price={current} rows={len(hist_df)}")
+    return _calculate_indicators(kode, name, current, prev, chg_pct, hist_df, None, None)
+
+
+def _fetch_from_sectors(kode: str) -> dict | None:
+    """
+    Fetch dari Sectors.app — API khusus IDX Indonesia.
+    Docs: https://api.sectors.app/v1
+    """
+    import requests
+
+    if not SECTORS_API_KEY:
+        logger.warning("SECTORS_API_KEY tidak diset")
+        return None
+
+    headers = {
+        "Authorization": SECTORS_API_KEY,
+        "Content-Type": "application/json",
+    }
+    base = "https://api.sectors.app/v1"
+
+    # ── Harga terkini & historis
+    from datetime import datetime, timedelta
+    date_to   = datetime.now().strftime("%Y-%m-%d")
+    date_from = (datetime.now() - timedelta(days=200)).strftime("%Y-%m-%d")
+
+    url_hist = f"{base}/daily/{kode}/?start={date_from}&end={date_to}"
+    logger.info(f"Sectors: fetching {url_hist}")
+    r = requests.get(url_hist, headers=headers, timeout=15)
+    logger.info(f"Sectors response: {r.status_code}")
+    r.raise_for_status()
+
+    data = r.json()
+    if not data:
+        return None
+
+    # Sectors return list of {"date","close","open","high","low","volume"}
+    df = pd.DataFrame(data)
+    df.columns = [c.strip().title() for c in df.columns]
+
+    # Rename kolom
+    col_map = {"Date":"Date","Close":"Close","Open":"Open",
+               "High":"High","Low":"Low","Volume":"Volume"}
+    df = df.rename(columns=col_map)
+
+    if "Date" not in df.columns or "Close" not in df.columns:
+        logger.warning(f"Sectors: kolom tidak sesuai: {list(df.columns)}")
+        return None
+
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df = df.dropna(subset=["Date"]).set_index("Date").sort_index()
+
+    for col in ["Open","High","Low","Volume"]:
+        if col not in df.columns:
+            df[col] = df["Close"]
+
+    df = df[["Open","High","Low","Close","Volume"]].dropna()
+
+    if len(df) < 20:
+        logger.warning(f"Sectors: data kurang ({len(df)} rows)")
+        return None
+
+    current = float(df["Close"].iloc[-1])
+    prev    = float(df["Close"].iloc[-2])
+    chg_pct = ((current - prev) / prev) * 100
+
+    # ── Nama perusahaan (opsional)
+    name = kode
+    try:
+        rp = requests.get(f"{base}/company/report/{kode}/", headers=headers, timeout=10)
+        if rp.status_code == 200:
+            profile = rp.json()
+            name = profile.get("company_name") or profile.get("name") or kode
+    except Exception:
+        pass
+
+    logger.info(f"Sectors: {kode} price={current} rows={len(df)}")
+    return _calculate_indicators(kode, name, current, prev, chg_pct, df, None, None)
 
 
 def _fetch_from_finnhub(kode: str) -> dict | None:
@@ -225,44 +385,54 @@ def _fetch_from_finnhub(kode: str) -> dict | None:
 
 
 def _fetch_from_stooq(kode: str) -> dict | None:
-    """Fetch dari Stooq — fallback, format ticker IDX: HATM.ID"""
+    """Fetch dari Stooq — fallback, coba berbagai format ticker IDX."""
     import requests, io
 
-    ticker = kode.upper() + ".ID"
-    url    = f"https://stooq.com/q/d/l/?s={ticker}&i=d"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-    r = requests.get(url, headers=headers, timeout=15)
-    r.raise_for_status()
+    # Coba beberapa format ticker IDX di Stooq
+    tickers = [f"{kode}.ID", f"{kode}.JK", kode]
 
-    text = r.text.strip()
-    if not text or "No data" in text or len(text) < 50:
-        return None
+    for ticker in tickers:
+        try:
+            url = f"https://stooq.com/q/d/l/?s={ticker.lower()}&i=d"
+            r   = requests.get(url, headers=headers, timeout=15)
+            r.raise_for_status()
 
-    # Baca CSV tanpa parse_dates dulu
-    hist_df = pd.read_csv(io.StringIO(text))
-    logger.info(f"Stooq columns: {list(hist_df.columns)}")
+            text = r.text.strip()
+            logger.info(f"Stooq {ticker} response preview: {text[:100]}")
 
-    # Normalize nama kolom — Stooq kadang pakai 'Date', kadang lowercase
-    hist_df.columns = [c.strip().title() for c in hist_df.columns]
+            # Kalau bukan CSV (HTML error page), skip
+            if not text.startswith("Date") and not text.startswith("date"):
+                logger.warning(f"Stooq {ticker}: bukan CSV, skip")
+                continue
 
-    if "Date" not in hist_df.columns:
-        logger.warning(f"Stooq: no Date column, got {list(hist_df.columns)}")
-        return None
+            hist_df = pd.read_csv(io.StringIO(text))
+            hist_df.columns = [c.strip().title() for c in hist_df.columns]
 
-    hist_df["Date"] = pd.to_datetime(hist_df["Date"], errors="coerce")
-    hist_df = hist_df.set_index("Date").sort_index()
-    hist_df = hist_df[["Open","High","Low","Close","Volume"]].dropna()
+            if "Date" not in hist_df.columns or "Close" not in hist_df.columns:
+                continue
 
-    if len(hist_df) < 20:
-        return None
+            hist_df["Date"] = pd.to_datetime(hist_df["Date"], errors="coerce")
+            hist_df = hist_df.dropna(subset=["Date"])
+            hist_df = hist_df.set_index("Date").sort_index()
+            hist_df = hist_df[["Open","High","Low","Close","Volume"]].dropna()
 
-    current = float(hist_df["Close"].iloc[-1])
-    prev    = float(hist_df["Close"].iloc[-2])
-    chg_pct = ((current - prev) / prev) * 100
+            if len(hist_df) < 20:
+                continue
 
-    logger.info(f"Stooq: {kode} price={current} rows={len(hist_df)}")
-    return _calculate_indicators(kode, kode, current, prev, chg_pct, hist_df, None, None)
+            current = float(hist_df["Close"].iloc[-1])
+            prev    = float(hist_df["Close"].iloc[-2])
+            chg_pct = ((current - prev) / prev) * 100
+
+            logger.info(f"Stooq {ticker}: price={current} rows={len(hist_df)}")
+            return _calculate_indicators(kode, kode, current, prev, chg_pct, hist_df, None, None)
+
+        except Exception as e:
+            logger.warning(f"Stooq {ticker} error: {e}")
+            continue
+
+    return None
 
 
 def _fetch_from_idx(kode: str) -> dict | None:
