@@ -174,12 +174,12 @@ def _fetch_from_itick(kode: str) -> dict | None:
     now       = int(time.time())
     from_ts   = now - (180 * 24 * 3600)
 
-    r2 = requests.get(
-        f"{base}/stock/kline",
-        params={"region": "ID", "code": kode, "kType": "1D",
-                "startTime": from_ts, "endTime": now},
-        headers=headers, timeout=15
-    )
+r2 = requests.get(
+    f"{base}/stock/kline",
+    params={"region": "ID", "code": kode, "kType": "8",
+            "limit": "180", "et": str(now * 1000)},
+    headers=headers, timeout=15
+)
     r2.raise_for_status()
     kline = r2.json()
     logger.info(f"iTick kline {kode}: code={kline.get('code')} count={len(kline.get('data',[]))}")
@@ -191,12 +191,12 @@ def _fetch_from_itick(kode: str) -> dict | None:
     bars = kline["data"]
     # Format iTick: [timestamp, open, high, low, close, volume]
     try:
-        opens   = pd.Series([float(b[1]) for b in bars], dtype=float)
-        highs   = pd.Series([float(b[2]) for b in bars], dtype=float)
-        lows    = pd.Series([float(b[3]) for b in bars], dtype=float)
-        closes  = pd.Series([float(b[4]) for b in bars], dtype=float)
-        volumes = pd.Series([float(b[5]) for b in bars], dtype=float)
-        dates   = pd.to_datetime([int(b[0]) for b in bars], unit="ms")
+opens   = pd.Series([float(b["o"]) for b in bars], dtype=float)
+highs   = pd.Series([float(b["h"]) for b in bars], dtype=float)
+lows    = pd.Series([float(b["l"]) for b in bars], dtype=float)
+closes  = pd.Series([float(b["c"]) for b in bars], dtype=float)
+volumes = pd.Series([float(b["v"]) for b in bars], dtype=float)
+dates   = pd.to_datetime([int(b["t"]) for b in bars], unit="ms")
     except (IndexError, TypeError) as e:
         logger.warning(f"iTick: error parsing kline data: {e}")
         return None
