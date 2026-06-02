@@ -1,0 +1,9 @@
+python-telegram-bot==21.6
+yfinance==0.2.43
+pandas==2.2.3
+numpy==1.26.4
+APScheduler==3.10.4
+pytz==2024.2
+matplotlib==3.9.2
+requests==2.31.0
+urllib3==2.0.7
