@@ -1,0 +1,7 @@
+python-telegram-bot==21.6
+apscheduler==3.10.4
+pytz
+pandas>=2.0
+numpy
+matplotlib
+requests>=2.31
