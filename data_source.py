@@ -4,7 +4,7 @@ data_source.py  –  IDX Official API
 Endpoint:
   1. GetStockSummary  → harga terkini (stabil ✅)
      URL: https://www.idx.co.id/primary/TradingSummary/GetStockSummary
-          ?start=0&length=1&code={code}&lang=id
+          ?start=0&length=9999&lang=id
 
   2. GetChartStockbyCode → historis OHLCV (kadang 503, retry 3x)
      URL: https://www.idx.co.id/primary/StockData/GetChartStockbyCode
@@ -42,9 +42,12 @@ IDX_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
 }
 
+# IDX tidak filter by code — parameter code= hanya hint sorting, bukan filter.
+# Solusi: fetch semua saham sekaligus (length=9999) lalu filter client-side.
+# Untuk personal bot ini cukup efisien (~1.5MB, <2 detik).
 IDX_SUMMARY_URL = (
     "https://www.idx.co.id/primary/TradingSummary/GetStockSummary"
-    "?start=0&length=1&code={code}&lang=id"
+    "?start=0&length=9999&lang=id"
 )
 
 IDX_CHART_URL = (
@@ -96,59 +99,38 @@ def get_current_price(code: str) -> Optional[dict]:
                  change, change_pct, volume, date
     """
     code = code.upper().strip()
-    url  = IDX_SUMMARY_URL.format(code=code)
+    url  = IDX_SUMMARY_URL          # tidak pakai {code}, fetch semua lalu filter
     sess = _session()
 
     for attempt in range(MAX_RETRY):
         try:
-            r = sess.get(url, timeout=15)
+            r = sess.get(url, timeout=30)
             r.raise_for_status()
             payload = r.json()
 
-            # IDX response: key "data" (lowercase) berisi list
             rows = payload.get("data", payload.get("Data", []))
 
             if not rows:
-                logger.warning(f"[IDX Summary] {code}: data kosong (recordsFiltered=0)")
+                logger.warning(f"[IDX Summary] data kosong")
                 return None
 
-            row = rows[0]
+            # Filter exact match StockCode
+            row = None
+            for r in rows:
+                if str(r.get("StockCode", "")).upper().strip() == code:
+                    row = r
+                    break
 
-            # ── Field mapping sesuai response IDX nyata ──
-            close   = float(row.get("Close")     or 0)
-            prev    = float(row.get("Previous")  or close)
-            open_   = float(row.get("OpenPrice") or prev)
-            high    = float(row.get("High")      or close)
-            low     = float(row.get("Low")       or close)
-            vol     = int(float(row.get("Volume") or 0))
-            chg     = float(row.get("Change")    or 0)
+            if row is None:
+                logger.warning(f"[IDX Summary] {code}: kode tidak ditemukan dalam {len(rows)} saham")
+                return None
 
-            # change_pct: hitung dari Change/Previous
-            # (IDX tidak kasih langsung, tapi ada field "persen" yg null)
-            chg_pct = (chg / prev * 100) if prev > 0 else 0.0
-
-            # Date: "2026-06-04T00:00:00" → ambil 10 karakter pertama
-            raw_date = row.get("Date") or ""
-            date_str = raw_date[:10] if raw_date else ""
-
-            result = {
-                "code":       row.get("StockCode", code),
-                "name":       row.get("StockName", ""),
-                "open":       open_,
-                "high":       high,
-                "low":        low,
-                "close":      close,
-                "previous":   prev,
-                "change":     chg,
-                "change_pct": chg_pct,
-                "volume":     vol,
-                "date":       date_str,
-            }
+            result = _parse_summary_row(row, code)
 
             logger.info(
-                f"[IDX Summary] ✅ {code}: Close={close:,.0f} "
-                f"({chg:+.0f} / {chg_pct:+.2f}%) "
-                f"Vol={vol:,} Date={date_str}"
+                f"[IDX Summary] ✅ {code}: Close={result['close']:,.0f} "
+                f"({result['change']:+.0f} / {result['change_pct']:+.2f}%) "
+                f"Vol={result['volume']:,} Date={result['date']}"
             )
             return result
 
@@ -159,6 +141,33 @@ def get_current_price(code: str) -> Optional[dict]:
 
     logger.error(f"[IDX Summary] ❌ {code}: semua retry gagal")
     return None
+
+
+def _parse_summary_row(row: dict, code: str) -> dict:
+    """Parse satu row dari IDX Summary response menjadi dict standar."""
+    close   = float(row.get("Close")     or 0)
+    prev    = float(row.get("Previous")  or close)
+    open_   = float(row.get("OpenPrice") or prev)
+    high    = float(row.get("High")      or close)
+    low     = float(row.get("Low")       or close)
+    vol     = int(float(row.get("Volume") or 0))
+    chg     = float(row.get("Change")    or 0)
+    chg_pct = (chg / prev * 100) if prev > 0 else 0.0
+    raw_date = row.get("Date") or ""
+    date_str = raw_date[:10] if raw_date else ""
+    return {
+        "code":       row.get("StockCode", code),
+        "name":       row.get("StockName", ""),
+        "open":       open_,
+        "high":       high,
+        "low":        low,
+        "close":      close,
+        "previous":   prev,
+        "change":     chg,
+        "change_pct": chg_pct,
+        "volume":     vol,
+        "date":       date_str,
+    }
 
 
 # ── IDX GetChartStockbyCode (historis OHLCV) ─────────────────────────────
